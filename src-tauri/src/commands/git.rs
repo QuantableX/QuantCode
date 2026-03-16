@@ -1,0 +1,301 @@
+use git2::{DiffOptions, Repository, StatusOptions};
+use serde::Serialize;
+use std::path::Path;
+
+// ---------------------------------------------------------------------------
+// Types returned to the frontend
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Clone, Debug)]
+pub struct GitFileEntry {
+    pub path: String,
+    /// One of: "new", "modified", "deleted", "renamed", "typechange", "conflicted", "unknown"
+    pub status: String,
+    /// Whether this change is staged (in the index)
+    pub staged: bool,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct GitStatusResult {
+    pub branch: String,
+    pub files: Vec<GitFileEntry>,
+    pub ahead: usize,
+    pub behind: usize,
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+fn status_string(status: git2::Status) -> &'static str {
+    if status.intersects(git2::Status::INDEX_NEW | git2::Status::WT_NEW) {
+        "new"
+    } else if status.intersects(git2::Status::INDEX_MODIFIED | git2::Status::WT_MODIFIED) {
+        "modified"
+    } else if status.intersects(git2::Status::INDEX_DELETED | git2::Status::WT_DELETED) {
+        "deleted"
+    } else if status.intersects(git2::Status::INDEX_RENAMED | git2::Status::WT_RENAMED) {
+        "renamed"
+    } else if status.intersects(git2::Status::INDEX_TYPECHANGE | git2::Status::WT_TYPECHANGE) {
+        "typechange"
+    } else if status.is_conflicted() {
+        "conflicted"
+    } else {
+        "unknown"
+    }
+}
+
+fn is_staged(status: git2::Status) -> bool {
+    status.intersects(
+        git2::Status::INDEX_NEW
+            | git2::Status::INDEX_MODIFIED
+            | git2::Status::INDEX_DELETED
+            | git2::Status::INDEX_RENAMED
+            | git2::Status::INDEX_TYPECHANGE,
+    )
+}
+
+/// Try to compute how many commits the local branch is ahead/behind its upstream.
+fn ahead_behind(repo: &Repository) -> (usize, usize) {
+    let head = match repo.head() {
+        Ok(h) => h,
+        Err(_) => return (0, 0),
+    };
+    let local_oid = match head.target() {
+        Some(oid) => oid,
+        None => return (0, 0),
+    };
+    let branch_name = match head.shorthand() {
+        Some(n) => n.to_string(),
+        None => return (0, 0),
+    };
+    let upstream_ref = format!("refs/remotes/origin/{}", branch_name);
+    let upstream_oid = match repo.refname_to_id(&upstream_ref) {
+        Ok(oid) => oid,
+        Err(_) => return (0, 0),
+    };
+    repo.graph_ahead_behind(local_oid, upstream_oid)
+        .unwrap_or((0, 0))
+}
+
+// ---------------------------------------------------------------------------
+// git_status
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn git_status(repo_path: String) -> Result<GitStatusResult, String> {
+    let repo =
+        Repository::open(Path::new(&repo_path)).map_err(|e| format!("Cannot open repo: {}", e))?;
+
+    // Branch name
+    let branch = repo
+        .head()
+        .ok()
+        .and_then(|h| h.shorthand().map(String::from))
+        .unwrap_or_else(|| "HEAD (detached)".to_string());
+
+    // Status entries
+    let mut opts = StatusOptions::new();
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_unmodified(false);
+
+    let statuses = repo
+        .statuses(Some(&mut opts))
+        .map_err(|e| format!("Failed to get status: {}", e))?;
+
+    let mut files: Vec<GitFileEntry> = Vec::new();
+    for entry in statuses.iter() {
+        let path = entry
+            .path()
+            .unwrap_or("<non-utf8 path>")
+            .to_string();
+        let st = entry.status();
+
+        // If a file has both staged and unstaged changes, emit two entries.
+        let has_staged = is_staged(st);
+        let has_unstaged = st.intersects(
+            git2::Status::WT_NEW
+                | git2::Status::WT_MODIFIED
+                | git2::Status::WT_DELETED
+                | git2::Status::WT_RENAMED
+                | git2::Status::WT_TYPECHANGE,
+        );
+
+        if has_staged {
+            files.push(GitFileEntry {
+                path: path.clone(),
+                status: status_string(st).to_string(),
+                staged: true,
+            });
+        }
+        if has_unstaged {
+            files.push(GitFileEntry {
+                path: path.clone(),
+                status: status_string(st).to_string(),
+                staged: false,
+            });
+        }
+        // Edge case: conflicted files
+        if !has_staged && !has_unstaged {
+            files.push(GitFileEntry {
+                path,
+                status: status_string(st).to_string(),
+                staged: false,
+            });
+        }
+    }
+
+    let (ahead, behind) = ahead_behind(&repo);
+
+    Ok(GitStatusResult {
+        branch,
+        files,
+        ahead,
+        behind,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// git_diff
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn git_diff(repo_path: String, staged: bool) -> Result<String, String> {
+    let repo =
+        Repository::open(Path::new(&repo_path)).map_err(|e| format!("Cannot open repo: {}", e))?;
+
+    let mut opts = DiffOptions::new();
+    opts.include_untracked(true);
+
+    let diff = if staged {
+        // Staged diff: compare HEAD tree to index
+        let head_tree = repo
+            .head()
+            .ok()
+            .and_then(|h| h.peel_to_tree().ok());
+        repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))
+            .map_err(|e| format!("Failed to get staged diff: {}", e))?
+    } else {
+        // Unstaged diff: compare index to workdir
+        repo.diff_index_to_workdir(None, Some(&mut opts))
+            .map_err(|e| format!("Failed to get unstaged diff: {}", e))?
+    };
+
+    let mut diff_text = String::new();
+    diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
+        let origin = line.origin();
+        match origin {
+            '+' | '-' | ' ' => {
+                diff_text.push(origin);
+            }
+            _ => {}
+        }
+        diff_text.push_str(
+            std::str::from_utf8(line.content()).unwrap_or("<binary>"),
+        );
+        true
+    })
+    .map_err(|e| format!("Failed to print diff: {}", e))?;
+
+    Ok(diff_text)
+}
+
+// ---------------------------------------------------------------------------
+// git_stage
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn git_stage(repo_path: String, file_paths: Vec<String>) -> Result<(), String> {
+    let repo =
+        Repository::open(Path::new(&repo_path)).map_err(|e| format!("Cannot open repo: {}", e))?;
+
+    let mut index = repo
+        .index()
+        .map_err(|e| format!("Failed to get index: {}", e))?;
+
+    let repo_root = repo
+        .workdir()
+        .ok_or_else(|| "Bare repository has no workdir".to_string())?;
+
+    for file_path in &file_paths {
+        let full_path = repo_root.join(file_path);
+        if full_path.exists() {
+            index
+                .add_path(Path::new(file_path))
+                .map_err(|e| format!("Failed to stage {}: {}", file_path, e))?;
+        } else {
+            // File was deleted — remove from index
+            index
+                .remove_path(Path::new(file_path))
+                .map_err(|e| format!("Failed to stage deletion of {}: {}", file_path, e))?;
+        }
+    }
+
+    index
+        .write()
+        .map_err(|e| format!("Failed to write index: {}", e))?;
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// git_commit
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn git_commit(repo_path: String, message: String) -> Result<String, String> {
+    let repo =
+        Repository::open(Path::new(&repo_path)).map_err(|e| format!("Cannot open repo: {}", e))?;
+
+    let sig = repo
+        .signature()
+        .map_err(|e| format!("Failed to get signature (configure user.name and user.email): {}", e))?;
+
+    let mut index = repo
+        .index()
+        .map_err(|e| format!("Failed to get index: {}", e))?;
+
+    let tree_oid = index
+        .write_tree()
+        .map_err(|e| format!("Failed to write tree: {}", e))?;
+
+    let tree = repo
+        .find_tree(tree_oid)
+        .map_err(|e| format!("Failed to find tree: {}", e))?;
+
+    // Parent commit (if any — first commit has no parent)
+    let parent_commit = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
+    let parents: Vec<&git2::Commit> = parent_commit.iter().collect();
+
+    let commit_oid = repo
+        .commit(Some("HEAD"), &sig, &sig, &message, &tree, &parents)
+        .map_err(|e| format!("Failed to create commit: {}", e))?;
+
+    Ok(commit_oid.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// git_branch_list
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn git_branch_list(repo_path: String) -> Result<Vec<String>, String> {
+    let repo =
+        Repository::open(Path::new(&repo_path)).map_err(|e| format!("Cannot open repo: {}", e))?;
+
+    let branches = repo
+        .branches(Some(git2::BranchType::Local))
+        .map_err(|e| format!("Failed to list branches: {}", e))?;
+
+    let mut result: Vec<String> = Vec::new();
+    for branch_result in branches {
+        let (branch, _) = branch_result.map_err(|e| format!("Branch error: {}", e))?;
+        if let Some(name) = branch.name().map_err(|e| format!("Branch name error: {}", e))? {
+            result.push(name.to_string());
+        }
+    }
+
+    result.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    Ok(result)
+}

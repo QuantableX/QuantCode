@@ -1,0 +1,208 @@
+@import "tailwindcss";
+
+/* ============= Theme Variables ============= */
+
+@theme {
+  --color-accent: #a0a0a8;
+  --color-accent-hover: #b8b8c0;
+  --color-accent-muted: #a0a0a833;
+  --color-brand: #f97316;
+  --color-terminal-green: #22d3ee;
+  --color-status-idle: #57606f;
+  --color-status-thinking: #a0a0a8;
+  --color-status-live: #2ed573;
+  --color-status-error: #ff4757;
+  --font-mono: ui-monospace, "Cascadia Code", "JetBrains Mono", "Fira Code", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+}
+
+/* ---- Dark theme (default) ---- */
+/* Hierarchy matches QuantMCP: bg-primary (#18181e) < bg-secondary (#1f1f25) < bg-card (#24242a) */
+:root {
+  --qc-bg: #18181e;
+  --qc-bg-titlebar: #1f1f25;
+  --qc-bg-window: #1f1f25;
+  --qc-bg-header: #24242a;
+  --qc-bg-surface: #2b2b32;
+  --qc-bg-input: #18181e;
+  --qc-border: #37373f;
+  --qc-border-subtle: #3d3d45;
+  --qc-text: #d4d4d8;
+  --qc-text-muted: #888892;
+  --qc-text-dim: #5a5a65;
+  --qc-scrollbar-track: #18181e;
+  --qc-scrollbar-thumb: #37373f;
+  --qc-scrollbar-thumb-hover: #4a4a52;
+  --qc-dot-grid: #3a3a42;
+  --qc-dot-grid-bright: #505058;
+}
+
+/* ---- Light theme ---- */
+[data-theme="light"] {
+  --qc-bg: #d8d8de;
+  --qc-bg-titlebar: #e0e0e5;
+  --qc-bg-window: #e0e0e5;
+  --qc-bg-header: #e0e0e5;
+  --qc-bg-surface: #ceced5;
+  --qc-bg-input: #d8d8de;
+  --qc-border: #babac2;
+  --qc-border-subtle: #b0b0b8;
+  --qc-text: #24242c;
+  --qc-text-muted: #585864;
+  --qc-text-dim: #888892;
+  --qc-scrollbar-track: #d8d8de;
+  --qc-scrollbar-thumb: #b4b4bc;
+  --qc-scrollbar-thumb-hover: #9898a2;
+  --qc-dot-grid: #adadb5;
+  --qc-dot-grid-bright: #8d8d97;
+}
+
+/* ============= Base Styles ============= */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html, body, #__nuxt {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background-color: var(--qc-bg);
+  color: var(--qc-text);
+  font-family: var(--font-sans);
+  font-size: 15px; /* default, overridden by appStore.applyFontSize() */
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background-color: var(--color-accent-muted);
+  color: var(--qc-text);
+}
+
+/* ============= Canvas Dot Grid ============= */
+
+.canvas-dot-grid {
+  background-image: radial-gradient(
+    circle,
+    var(--qc-dot-grid) 1px,
+    transparent 1px
+  );
+  background-size: 24px 24px;
+  background-position: center center;
+}
+
+.canvas-dot-grid-scaled {
+  background-image: radial-gradient(
+    circle,
+    var(--qc-dot-grid) 1px,
+    transparent 1px
+  );
+  background-size: calc(24px * var(--canvas-scale, 1)) calc(24px * var(--canvas-scale, 1));
+  background-position:
+    calc(var(--canvas-offset-x, 0) * 1px)
+    calc(var(--canvas-offset-y, 0) * 1px);
+}
+
+/* ============= Scrollbar Styles ============= */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--qc-scrollbar-track);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--qc-scrollbar-thumb);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--qc-scrollbar-thumb-hover);
+}
+
+::-webkit-scrollbar-corner {
+  background: var(--qc-scrollbar-track);
+}
+
+/* ============= Monaco Editor ============= */
+
+.monaco-editor-container {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.monaco-editor-container .monaco-editor {
+  position: absolute !important;
+}
+
+.monaco-editor-container .monaco-editor .overflow-guard {
+  border-radius: 0;
+}
+
+.monaco-editor .minimap {
+  opacity: 0.6;
+}
+
+/* ============= xterm.js Terminal ============= */
+
+.xterm-container {
+  width: 100%;
+  height: 100%;
+  padding: 4px;
+  background-color: var(--qc-bg);
+}
+
+.xterm-container .xterm {
+  height: 100%;
+  padding: 2px 4px;
+}
+
+.xterm-container .xterm-viewport {
+  overflow-y: auto;
+}
+
+.xterm-container .xterm-viewport::-webkit-scrollbar {
+  width: 6px;
+}
+
+.xterm-container .xterm-viewport::-webkit-scrollbar-track {
+  background: var(--color-scrollbar-track);
+}
+
+.xterm-container .xterm-viewport::-webkit-scrollbar-thumb {
+  background: var(--color-scrollbar-thumb);
+  border-radius: 3px;
+}
+
+/* ============= Utility Classes ============= */
+
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+.drag-region {
+  -webkit-app-region: drag;
+}
+
+.transition-fast {
+  transition: all 0.1s ease;
+}
+
+.transition-normal {
+  transition: all 0.2s ease;
+}
+
+/* ============= File Tree ============= */
+
+.file-tree-row:hover {
+  background-color: var(--qc-bg-header);
+}

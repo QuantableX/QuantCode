@@ -1,0 +1,53 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "preserve",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "jsx": "preserve",
+    "jsxImportSource": "vue",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "allowArbitraryExtensions": true,
+    "noEmit": true,
+    "allowJs": true,
+    "noImplicitOverride": true,
+    "noImplicitThis": true,
+    "allowSyntheticDefaultImports": true,
+    "moduleDetection": "force",
+    "useDefineForClassFields": true,
+    "lib": ["ESNext", "dom", "dom.iterable", "webworker"],
+    "types": [],
+    "paths": {
+      "~/*": ["./app/*"],
+      "@/*": ["./app/*"],
+      "~": ["./app"],
+      "@": ["./app"],
+      "#imports": ["./.nuxt/imports"],
+      "#components": ["./.nuxt/components"],
+      "#app": ["./node_modules/nuxt/dist/app"],
+      "#app/*": ["./node_modules/nuxt/dist/app/*"],
+      "#build": ["./.nuxt"],
+      "#build/*": ["./.nuxt/*"]
+    }
+  },
+  "include": [
+    "app/**/*",
+    "shared/**/*",
+    "composables/**/*",
+    "stores/**/*",
+    "lib/**/*",
+    ".nuxt/nuxt.d.ts",
+    ".config/nuxt.*"
+  ],
+  "exclude": [
+    "dist",
+    "node_modules",
+    ".data",
+    "src-tauri"
+  ]
+}
