@@ -150,6 +150,16 @@ async function initMonaco() {
   }
 }
 
+// Watch for external content updates (e.g., refreshTab after spec overwrite)
+watch(() => activeTab.value?.content, (newContent) => {
+  if (!editorInstance || newContent == null) return
+  if (editorInstance.getValue() !== newContent) {
+    ignoreChanges = true
+    editorInstance.setValue(newContent)
+    ignoreChanges = false
+  }
+})
+
 // Switch editor content when active tab changes
 watch(activeTabId, () => {
   if (!editorInstance || !monacoModule) return
@@ -182,6 +192,7 @@ async function saveFile() {
       content,
     })
     appStore.markTabClean(activeTab.value.id)
+    appStore.notifyFileSaved(activeTab.value.filePath, content)
   } catch (e) {
     console.error('Failed to save file:', e)
   }

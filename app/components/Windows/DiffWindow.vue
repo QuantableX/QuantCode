@@ -1,5 +1,8 @@
 <script setup lang="ts">
-import type { CanvasWindow, FileDiff, DiffHunk } from '../../../shared/types'
+import { invoke } from '@tauri-apps/api/core'
+import type { CanvasWindow, FileDiff, DiffHunk, GitStatus, GitStatusFile } from '../../../shared/types'
+import { useWorkspacesStore } from '../../../stores/workspaces'
+import { parseUnifiedDiff, resetHunkIdCounter } from '../../../lib/diff/parser'
 
 const props = defineProps<{
   window: CanvasWindow
@@ -13,36 +16,147 @@ const emit = defineEmits<{
   (e: 'reject-all'): void
 }>()
 
+const workspacesStore = useWorkspacesStore()
+
 const viewMode = ref<'inline' | 'side-by-side'>('inline')
 const activeFileIndex = ref(0)
+const diffScope = ref<'all' | 'staged' | 'unstaged'>('all')
+const gitDiffs = ref<FileDiff[]>([])
+const loading = ref(false)
+const gitBranch = ref('')
+const errorMsg = ref('')
+
+// Use prop diffs if provided (agent mode), otherwise git diffs
+const isGitMode = computed(() => !props.diffs || props.diffs.length === 0)
 
 const fileDiffs = computed<FileDiff[]>(() => {
-  if (props.diffs && props.diffs.length > 0) return props.diffs
-
-  // Demo data when no diffs provided
-  return [
-    {
-      filePath: 'src/main.ts',
-      isNew: false,
-      isDeleted: false,
-      hunks: [
-        {
-          id: 'demo-1',
-          filePath: 'src/main.ts',
-          oldStart: 1,
-          oldLines: 3,
-          newStart: 1,
-          newLines: 5,
-          oldContent: 'const app = createApp()\napp.use(router)\napp.mount("#app")',
-          newContent: 'import { pinia } from "./stores"\n\nconst app = createApp()\napp.use(router)\napp.use(pinia)\napp.mount("#app")',
-          accepted: undefined,
-        },
-      ],
-    },
-  ]
+  if (!isGitMode.value) return props.diffs!
+  return gitDiffs.value
 })
 
 const activeFile = computed(() => fileDiffs.value[activeFileIndex.value])
+
+function filterStatusFiles(files: GitStatusFile[], scope: 'all' | 'staged' | 'unstaged'): GitStatusFile[] {
+  if (scope === 'staged') return files.filter(f => f.staged)
+  if (scope === 'unstaged') return files.filter(f => !f.staged)
+  // 'all': deduplicate by path (a file can appear twice — once staged, once unstaged)
+  const seen = new Set<string>()
+  return files.filter(f => {
+    if (seen.has(f.path)) return false
+    seen.add(f.path)
+    return true
+  })
+}
+
+async function loadGitDiff() {
+  const workspace = workspacesStore.activeWorkspace
+  if (!workspace) {
+    errorMsg.value = 'No workspace open'
+    return
+  }
+
+  loading.value = true
+  errorMsg.value = ''
+
+  try {
+    const [diffText, statusResult] = await Promise.all([
+      invoke<string>('git_diff', {
+        repoPath: workspace.folderPath,
+        mode: diffScope.value,
+      }),
+      invoke<GitStatus>('git_status', {
+        repoPath: workspace.folderPath,
+      }),
+    ])
+
+    gitBranch.value = statusResult.branch
+    resetHunkIdCounter()
+
+    // Parse diff content
+    const parsedDiffs = parseUnifiedDiff(diffText)
+
+    // Use git_status as the source of truth for which files changed,
+    // then attach parsed diff content where available
+    const changedFiles = filterStatusFiles(statusResult.files, diffScope.value)
+    const parsedByPath = new Map(parsedDiffs.map(d => [d.filePath, d]))
+
+    const merged: FileDiff[] = []
+    const readQueue: { sf: GitStatusFile; isNew: boolean; isDeleted: boolean; index: number }[] = []
+
+    for (const sf of changedFiles) {
+      const parsed = parsedByPath.get(sf.path)
+      if (parsed) {
+        merged.push(parsed)
+        parsedByPath.delete(sf.path)
+      } else {
+        const isNew = sf.status === 'new' || (sf.status as string) === 'untracked'
+        const isDeleted = sf.status === 'deleted'
+
+        // For new/modified files without parsed diff, read the file content
+        // and show it as a full-file addition
+        if (!isDeleted) {
+          readQueue.push({ sf, isNew, isDeleted, index: merged.length })
+        }
+
+        merged.push({
+          filePath: sf.path,
+          hunks: [],
+          isNew,
+          isDeleted,
+        })
+      }
+    }
+
+    // Also include any parsed diffs that weren't matched to status files
+    for (const remaining of parsedByPath.values()) {
+      merged.push(remaining)
+    }
+
+    // Read file contents for files missing from diff output
+    const workspace_ = workspace
+    await Promise.all(readQueue.map(async ({ sf, isNew, isDeleted, index }) => {
+      try {
+        const content = await invoke<string>('read_file', {
+          path: workspace_.folderPath + '/' + sf.path,
+        })
+        if (content) {
+          const lines = content.split('\n')
+          merged[index] = {
+            filePath: sf.path,
+            hunks: [{
+              id: `read-${sf.path}`,
+              filePath: sf.path,
+              oldStart: 0,
+              oldLines: 0,
+              newStart: 1,
+              newLines: lines.length,
+              oldContent: '',
+              newContent: content,
+              accepted: undefined,
+            }],
+            isNew,
+            isDeleted,
+          }
+        }
+      } catch {
+        // File couldn't be read — keep empty hunks
+      }
+    }))
+
+    gitDiffs.value = merged
+    activeFileIndex.value = 0
+  } catch (err) {
+    errorMsg.value = err instanceof Error ? err.message : String(err)
+    gitDiffs.value = []
+  } finally {
+    loading.value = false
+  }
+}
+
+function switchScope(scope: 'all' | 'staged' | 'unstaged') {
+  diffScope.value = scope
+  loadGitDiff()
+}
 
 function getOldLines(hunk: DiffHunk): string[] {
   return hunk.oldContent.split('\n')
@@ -64,13 +178,10 @@ function computeInlineDiff(hunk: DiffHunk): DiffLine[] {
   const newLines = getNewLines(hunk)
   const lines: DiffLine[] = []
 
-  // Simple diff: show all old lines as removed, then all new as added
-  // For matching lines, show as unchanged
   const maxLen = Math.max(oldLines.length, newLines.length)
   let oldIdx = 0
   let newIdx = 0
 
-  // Try to match lines
   for (let i = 0; i < maxLen; i++) {
     const oldLine = oldIdx < oldLines.length ? oldLines[oldIdx] : null
     const newLine = newIdx < newLines.length ? newLines[newIdx] : null
@@ -85,7 +196,6 @@ function computeInlineDiff(hunk: DiffHunk): DiffLine[] {
       oldIdx++
       newIdx++
     } else {
-      // Check if the old line appears later in new (insertion before it)
       if (newLine !== null && oldLine !== null && newLines.indexOf(oldLine, newIdx) > newIdx) {
         lines.push({
           type: 'added',
@@ -94,7 +204,7 @@ function computeInlineDiff(hunk: DiffHunk): DiffLine[] {
           newLineNum: hunk.newStart + newIdx,
         })
         newIdx++
-        i-- // retry the old line
+        i--
       } else if (oldLine !== null && newLine !== null && oldLines.indexOf(newLine, oldIdx) > oldIdx) {
         lines.push({
           type: 'removed',
@@ -103,7 +213,7 @@ function computeInlineDiff(hunk: DiffHunk): DiffLine[] {
           newLineNum: null,
         })
         oldIdx++
-        i-- // retry the new line
+        i--
       } else {
         if (oldLine !== null) {
           lines.push({
@@ -167,6 +277,10 @@ function rejectAll() {
 function extractFileName(path: string): string {
   return path.split(/[/\\]/).pop() ?? path
 }
+
+onMounted(() => {
+  if (isGitMode.value) loadGitDiff()
+})
 </script>
 
 <template>
@@ -174,6 +288,33 @@ function extractFileName(path: string): string {
     <!-- Toolbar -->
     <div class="flex items-center justify-between px-3 py-1.5 flex-shrink-0" :style="{ borderBottom: '1px solid var(--qc-border)', background: 'var(--qc-bg-header)' }">
       <div class="flex items-center gap-2">
+        <!-- Git mode scope toggle -->
+        <template v-if="isGitMode">
+          <button
+            class="px-2 py-0.5 text-[10px] rounded transition-colors"
+            :style="diffScope === 'all' ? { background: 'var(--qc-bg-surface)', color: 'var(--qc-text)' } : { color: 'var(--qc-text-dim)' }"
+            @click="switchScope('all')"
+          >
+            All
+          </button>
+          <button
+            class="px-2 py-0.5 text-[10px] rounded transition-colors"
+            :style="diffScope === 'staged' ? { background: 'var(--qc-bg-surface)', color: 'var(--qc-text)' } : { color: 'var(--qc-text-dim)' }"
+            @click="switchScope('staged')"
+          >
+            Staged
+          </button>
+          <button
+            class="px-2 py-0.5 text-[10px] rounded transition-colors"
+            :style="diffScope === 'unstaged' ? { background: 'var(--qc-bg-surface)', color: 'var(--qc-text)' } : { color: 'var(--qc-text-dim)' }"
+            @click="switchScope('unstaged')"
+          >
+            Unstaged
+          </button>
+          <span class="text-[9px] px-1" :style="{ color: 'var(--qc-text-dim)' }">|</span>
+        </template>
+
+        <!-- View mode toggle -->
         <button
           class="px-2 py-0.5 text-[10px] rounded transition-colors"
           :style="viewMode === 'inline' ? { background: 'var(--qc-bg-surface)', color: 'var(--qc-text)' } : { color: 'var(--qc-text-dim)' }"
@@ -189,24 +330,59 @@ function extractFileName(path: string): string {
           Side by Side
         </button>
       </div>
+
       <div class="flex items-center gap-2">
-        <button
-          class="px-2 py-0.5 text-[10px] text-green-400 bg-green-400/10 rounded hover:bg-green-400/20 transition-colors"
-          @click="acceptAll"
+        <!-- File count + branch badge (git mode) -->
+        <span
+          v-if="isGitMode && fileDiffs.length > 0"
+          class="text-[9px] px-1.5 py-0.5 rounded"
+          :style="{ background: 'var(--qc-bg-surface)', color: 'var(--qc-text-dim)' }"
         >
-          Accept All
-        </button>
-        <button
-          class="px-2 py-0.5 text-[10px] text-red-400 bg-red-400/10 rounded hover:bg-red-400/20 transition-colors"
-          @click="rejectAll"
+          {{ fileDiffs.length }} file{{ fileDiffs.length !== 1 ? 's' : '' }}
+        </span>
+        <span
+          v-if="isGitMode && gitBranch"
+          class="text-[9px] px-1.5 py-0.5 rounded"
+          :style="{ background: 'var(--qc-bg-surface)', color: 'var(--qc-text-dim)' }"
         >
-          Reject All
+          {{ gitBranch }}
+        </span>
+
+        <!-- Refresh (git mode) -->
+        <button
+          v-if="isGitMode"
+          class="px-2 py-0.5 text-[10px] rounded transition-colors"
+          :style="{ color: 'var(--qc-text-dim)' }"
+          :disabled="loading"
+          @click="loadGitDiff"
+        >
+          {{ loading ? '...' : 'Refresh' }}
         </button>
+
+        <!-- Accept/Reject All (agent mode) -->
+        <template v-if="!isGitMode">
+          <button
+            class="px-2 py-0.5 text-[10px] text-green-400 bg-green-400/10 rounded hover:bg-green-400/20 transition-colors"
+            @click="acceptAll"
+          >
+            Accept All
+          </button>
+          <button
+            class="px-2 py-0.5 text-[10px] text-red-400 bg-red-400/10 rounded hover:bg-red-400/20 transition-colors"
+            @click="rejectAll"
+          >
+            Reject All
+          </button>
+        </template>
       </div>
     </div>
 
     <!-- File tabs -->
-    <div class="flex items-center gap-0 overflow-x-auto flex-shrink-0" :style="{ borderBottom: '1px solid var(--qc-border)', background: 'var(--qc-bg)' }">
+    <div
+      v-if="fileDiffs.length > 0"
+      class="flex items-center gap-0 overflow-x-auto flex-shrink-0"
+      :style="{ borderBottom: '1px solid var(--qc-border)', background: 'var(--qc-bg)' }"
+    >
       <button
         v-for="(file, idx) in fileDiffs"
         :key="file.filePath"
@@ -235,9 +411,48 @@ function extractFileName(path: string): string {
       </button>
     </div>
 
+    <!-- Loading state -->
+    <div
+      v-if="loading"
+      class="flex-1 flex items-center justify-center text-xs"
+      :style="{ color: 'var(--qc-text-dim)' }"
+    >
+      Loading diff...
+    </div>
+
+    <!-- Error state -->
+    <div
+      v-else-if="errorMsg"
+      class="flex-1 flex items-center justify-center text-xs px-4 text-center"
+      :style="{ color: 'var(--qc-text-dim)' }"
+    >
+      {{ errorMsg }}
+    </div>
+
+    <!-- Empty state -->
+    <div
+      v-else-if="fileDiffs.length === 0"
+      class="flex-1 flex flex-col items-center justify-center gap-2 text-xs"
+      :style="{ color: 'var(--qc-text-dim)' }"
+    >
+      <span class="text-2xl opacity-30">&#177;</span>
+      <span>No {{ diffScope === 'all' ? '' : diffScope + ' ' }}changes</span>
+    </div>
+
     <!-- Diff content -->
-    <div class="flex-1 min-h-0 overflow-auto font-mono text-xs">
+    <div
+      v-else
+      class="flex-1 min-h-0 overflow-auto font-mono text-xs"
+    >
       <template v-if="activeFile">
+        <!-- No diff content for this file (binary, empty, etc.) -->
+        <div
+          v-if="activeFile.hunks.length === 0"
+          class="flex items-center justify-center h-full text-xs"
+          :style="{ color: 'var(--qc-text-dim)' }"
+        >
+          {{ activeFile.isDeleted ? 'Deleted file' : 'Binary or empty diff' }}
+        </div>
         <div
           v-for="hunk in activeFile.hunks"
           :key="hunk.id"
@@ -246,7 +461,8 @@ function extractFileName(path: string): string {
           <!-- Hunk header -->
           <div class="flex items-center justify-between px-3 py-1 text-[10px]" :style="{ background: 'var(--qc-bg-header)', color: 'var(--qc-text-dim)' }">
             <span>@@ -{{ hunk.oldStart }},{{ hunk.oldLines }} +{{ hunk.newStart }},{{ hunk.newLines }} @@</span>
-            <div class="flex items-center gap-1.5">
+            <!-- Accept/Reject controls (agent mode only) -->
+            <div v-if="!isGitMode" class="flex items-center gap-1.5">
               <span
                 v-if="hunk.accepted === true"
                 class="text-green-400"

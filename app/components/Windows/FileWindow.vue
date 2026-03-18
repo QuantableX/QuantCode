@@ -194,6 +194,7 @@ async function saveFile() {
     })
     isDirty.value = false
     updateTitle()
+    appStore.notifyFileSaved(fileConfig.value.filePath, content)
   } catch (e) {
     console.error('Failed to save file:', e)
   }
@@ -255,6 +256,34 @@ watch(() => fileConfig.value?.filePath, () => {
   resizeObserver?.disconnect()
   resizeObserver = null
   loadFile()
+})
+
+// Sync from external saves (sidebar editor or other canvas windows)
+watch(() => appStore.lastSavedFile, async (saved) => {
+  if (!saved || !fileConfig.value) return
+  if (!appStore.pathsMatch(fileConfig.value.filePath, saved.filePath)) return
+  // Update Monaco if it exists and content differs
+  if (editorInstance && editorInstance.getValue() !== saved.content) {
+    ignoreContentChange = true
+    editorInstance.setValue(saved.content)
+    ignoreContentChange = false
+  }
+  isDirty.value = false
+  updateTitle()
+  // Update markdown preview if applicable
+  if (isMarkdown.value) {
+    markdownHtml.value = await marked.parse(saved.content)
+  }
+})
+
+// Close this canvas window when the file is deleted
+watch(() => appStore.lastDeletedFile, (deleted) => {
+  if (!deleted || !fileConfig.value) return
+  if (!appStore.pathsMatch(fileConfig.value.filePath, deleted.filePath)) return
+  const wsId = workspacesStore.activeWorkspaceId
+  if (wsId) {
+    canvasStore.removeWindow(wsId, props.window.id)
+  }
 })
 
 watch(() => appStore.theme, (t: Theme) => {

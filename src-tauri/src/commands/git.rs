@@ -161,25 +161,48 @@ pub fn git_status(repo_path: String) -> Result<GitStatusResult, String> {
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub fn git_diff(repo_path: String, staged: bool) -> Result<String, String> {
+pub fn git_diff(
+    repo_path: String,
+    staged: Option<bool>,
+    mode: Option<String>,
+) -> Result<String, String> {
     let repo =
         Repository::open(Path::new(&repo_path)).map_err(|e| format!("Cannot open repo: {}", e))?;
 
     let mut opts = DiffOptions::new();
-    opts.include_untracked(true);
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true);
 
-    let diff = if staged {
-        // Staged diff: compare HEAD tree to index
-        let head_tree = repo
-            .head()
-            .ok()
-            .and_then(|h| h.peel_to_tree().ok());
-        repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))
-            .map_err(|e| format!("Failed to get staged diff: {}", e))?
-    } else {
-        // Unstaged diff: compare index to workdir
-        repo.diff_index_to_workdir(None, Some(&mut opts))
-            .map_err(|e| format!("Failed to get unstaged diff: {}", e))?
+    // Determine diff mode: "all" (default), "staged", or "unstaged"
+    let effective_mode = mode.as_deref().unwrap_or_else(|| {
+        match staged {
+            Some(true) => "staged",
+            Some(false) => "unstaged",
+            None => "all",
+        }
+    });
+
+    let head_tree = repo
+        .head()
+        .ok()
+        .and_then(|h| h.peel_to_tree().ok());
+
+    let diff = match effective_mode {
+        "staged" => {
+            // Staged diff: compare HEAD tree to index
+            repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))
+                .map_err(|e| format!("Failed to get staged diff: {}", e))?
+        }
+        "unstaged" => {
+            // Unstaged diff: compare index to workdir
+            repo.diff_index_to_workdir(None, Some(&mut opts))
+                .map_err(|e| format!("Failed to get unstaged diff: {}", e))?
+        }
+        _ => {
+            // All changes: compare HEAD to workdir (includes both staged + unstaged)
+            repo.diff_tree_to_workdir_with_index(head_tree.as_ref(), Some(&mut opts))
+                .map_err(|e| format!("Failed to get all changes diff: {}", e))?
+        }
     };
 
     let mut diff_text = String::new();

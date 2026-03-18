@@ -227,6 +227,55 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
+  // Trigger for file explorer refresh — components watch this
+  const fileExplorerRefreshKey = ref(0)
+
+  function triggerFileExplorerRefresh(): void {
+    fileExplorerRefreshKey.value++
+  }
+
+  // Normalize path for comparison: forward slashes, lowercase drive letter
+  function normPath(p: string): string {
+    return p.replace(/\\/g, '/').replace(/^([A-Z]):/, (_, d) => d.toLowerCase() + ':')
+  }
+
+  function pathsMatch(a: string, b: string): boolean {
+    const na = normPath(a)
+    const nb = normPath(b)
+    return na === nb || na.endsWith('/' + nb) || nb.endsWith('/' + na)
+  }
+
+  function refreshTab(filePath: string, content: string): void {
+    const tab = activeEditorTabs.value.find(t => pathsMatch(t.filePath, filePath))
+    if (tab) {
+      tab.content = content
+      tab.savedContent = content
+      tab.isDirty = false
+    }
+  }
+
+  // Cross-editor file sync: when any editor saves, others can react
+  const lastSavedFile = ref<{ filePath: string; content: string; ts: number } | null>(null)
+
+  function notifyFileSaved(filePath: string, content: string): void {
+    lastSavedFile.value = { filePath, content, ts: Date.now() }
+    // Also update the sidebar editor tab if it exists
+    refreshTab(filePath, content)
+  }
+
+  // Notify that a file was deleted — close matching sidebar tabs and canvas windows
+  const lastDeletedFile = ref<{ filePath: string; ts: number } | null>(null)
+
+  function notifyFileDeleted(filePath: string): void {
+    // Close matching sidebar editor tab
+    const tab = activeEditorTabs.value.find(t => pathsMatch(t.filePath, filePath))
+    if (tab) {
+      closeTab(tab.id)
+    }
+    // Signal canvas windows to close (FileWindow watches this)
+    lastDeletedFile.value = { filePath, ts: Date.now() }
+  }
+
   return {
     // State
     fileExplorerVisible,
@@ -266,5 +315,13 @@ export const useAppStore = defineStore('app', () => {
     setActiveTab,
     updateTabContent,
     markTabClean,
+    fileExplorerRefreshKey,
+    triggerFileExplorerRefresh,
+    refreshTab,
+    lastSavedFile,
+    notifyFileSaved,
+    pathsMatch,
+    lastDeletedFile,
+    notifyFileDeleted,
   }
 })

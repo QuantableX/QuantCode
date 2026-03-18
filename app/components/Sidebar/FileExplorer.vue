@@ -16,6 +16,10 @@ const loading = ref(false)
 const contextMenu = ref({ visible: false, x: 0, y: 0, node: null as FileNode | null })
 const contextMenuRef = ref<HTMLElement | null>(null)
 
+// Delete confirmation modal
+const confirmDeleteVisible = ref(false)
+const pendingDeleteNode = ref<FileNode | null>(null)
+
 onClickOutside(contextMenuRef, () => {
   contextMenu.value.visible = false
 })
@@ -40,9 +44,38 @@ function filterNodes(nodes: FileNode[], query: string): FileNode[] {
   return result
 }
 
+function collectExpandedPaths(nodes: FileNode[]): Set<string> {
+  const paths = new Set<string>()
+  for (const node of nodes) {
+    if (node.isDirectory && node.expanded) {
+      paths.add(node.path)
+    }
+    if (node.children) {
+      for (const p of collectExpandedPaths(node.children)) {
+        paths.add(p)
+      }
+    }
+  }
+  return paths
+}
+
+function restoreExpandedPaths(nodes: FileNode[], expanded: Set<string>): void {
+  for (const node of nodes) {
+    if (node.isDirectory && expanded.has(node.path)) {
+      node.expanded = true
+    }
+    if (node.children) {
+      restoreExpandedPaths(node.children, expanded)
+    }
+  }
+}
+
 async function loadFileTree() {
   const workspace = workspacesStore.activeWorkspace
   if (!workspace) return
+
+  // Remember which folders are expanded
+  const expandedPaths = collectExpandedPaths(fileTree.value)
 
   loading.value = true
   try {
@@ -50,61 +83,19 @@ async function loadFileTree() {
       path: workspace.folderPath,
       gitignore: true,
     })
+    restoreExpandedPaths(tree, expandedPaths)
     fileTree.value = tree
   } catch {
-    // Demo data
-    fileTree.value = [
-      {
-        name: 'src',
-        path: 'src',
-        isDirectory: true,
-        expanded: true,
-        children: [
-          {
-            name: 'main.ts',
-            path: 'src/main.ts',
-            isDirectory: false,
-            gitStatus: 'modified',
-          },
-          {
-            name: 'App.vue',
-            path: 'src/App.vue',
-            isDirectory: false,
-            gitStatus: 'clean',
-          },
-          {
-            name: 'components',
-            path: 'src/components',
-            isDirectory: true,
-            expanded: false,
-            children: [
-              {
-                name: 'Header.vue',
-                path: 'src/components/Header.vue',
-                isDirectory: false,
-                gitStatus: 'untracked',
-              },
-            ],
-          },
-        ],
-      },
-      {
-        name: 'package.json',
-        path: 'package.json',
-        isDirectory: false,
-        gitStatus: 'staged',
-      },
-      {
-        name: 'tsconfig.json',
-        path: 'tsconfig.json',
-        isDirectory: false,
-        gitStatus: 'clean',
-      },
-    ]
+    fileTree.value = []
   } finally {
     loading.value = false
   }
 }
+
+// Watch for external refresh trigger
+watch(() => appStore.fileExplorerRefreshKey, () => {
+  loadFileTree()
+})
 
 function toggleExpand(node: FileNode) {
   if (node.isDirectory) {
@@ -237,11 +228,8 @@ async function contextAction(action: string) {
       break
     }
     case 'delete': {
-      if (!confirm(`Delete "${node.name}"?`)) return
-      try {
-        await invoke('delete_file', { path: node.path })
-        loadFileTree()
-      } catch { /* ignore */ }
+      pendingDeleteNode.value = node
+      confirmDeleteVisible.value = true
       break
     }
     case 'copy-path': {
@@ -257,6 +245,21 @@ async function contextAction(action: string) {
       break
     }
   }
+}
+
+async function handleDelete(confirmed: boolean) {
+  confirmDeleteVisible.value = false
+  if (!confirmed || !pendingDeleteNode.value) {
+    pendingDeleteNode.value = null
+    return
+  }
+  const node = pendingDeleteNode.value
+  pendingDeleteNode.value = null
+  try {
+    await invoke('delete_file', { path: node.path })
+    loadFileTree()
+    appStore.notifyFileDeleted(node.path)
+  } catch { /* ignore */ }
 }
 
 function openFileOnCanvas(node: FileNode) {
@@ -398,6 +401,43 @@ onMounted(() => {
             Open on Canvas
           </button>
         </template>
+      </div>
+    </Teleport>
+
+    <!-- Delete confirmation modal -->
+    <Teleport to="body">
+      <div
+        v-if="confirmDeleteVisible"
+        class="fixed inset-0 z-[9999] flex items-center justify-center"
+        style="background: rgba(0,0,0,0.5)"
+        @click.self="handleDelete(false)"
+      >
+        <div
+          class="rounded-lg shadow-2xl p-4 min-w-[280px] max-w-[360px] space-y-3"
+          :style="{ background: 'var(--qc-bg-header)', border: '1px solid var(--qc-border)' }"
+        >
+          <div class="text-xs font-bold" :style="{ color: 'var(--qc-text)' }">Delete {{ pendingDeleteNode?.isDirectory ? 'Folder' : 'File' }}</div>
+          <p class="text-xs leading-relaxed" :style="{ color: 'var(--qc-text-dim, var(--qc-text-muted))' }">
+            Are you sure you want to delete
+            <span class="text-red-400 font-medium">"{{ pendingDeleteNode?.name }}"</span>?
+            This cannot be undone.
+          </p>
+          <div class="flex items-center justify-end gap-2 pt-1">
+            <button
+              class="text-[10px] px-3 py-1.5 rounded transition-colors"
+              :style="{ color: 'var(--qc-text-dim, var(--qc-text-muted))', border: '1px solid var(--qc-border)' }"
+              @click="handleDelete(false)"
+            >
+              Cancel
+            </button>
+            <button
+              class="text-[10px] px-3 py-1.5 rounded transition-colors text-white bg-red-500 hover:bg-red-600"
+              @click="handleDelete(true)"
+            >
+              Delete
+            </button>
+          </div>
+        </div>
       </div>
     </Teleport>
   </div>

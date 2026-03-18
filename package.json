@@ -1,10 +1,10 @@
 {
   "name": "quantcode",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "nuxt dev",
+    "dev": "node --max-old-space-size=8192 ./node_modules/nuxt/bin/nuxt.mjs dev",
     "build": "nuxt build",
     "generate": "nuxt generate",
     "preview": "nuxt preview",

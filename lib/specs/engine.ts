@@ -161,7 +161,7 @@ export function serializeSpec(spec: SpecFile): string {
   const fm = spec.frontmatter
   const lines: string[] = [FRONTMATTER_DELIMITER]
 
-  lines.push(`title: "${fm.title}"`)
+  lines.push(`title: ${fm.title}`)
   lines.push(`status: ${fm.status}`)
 
   if (fm.priority) {
@@ -170,16 +170,10 @@ export function serializeSpec(spec: SpecFile): string {
   if (fm.assignedTo) {
     lines.push(`assignedTo: ${fm.assignedTo}`)
   }
+  lines.push('linkedFiles:')
   if (fm.linkedFiles && fm.linkedFiles.length > 0) {
-    lines.push('linkedFiles:')
     for (const file of fm.linkedFiles) {
       lines.push(`  - ${file}`)
-    }
-  }
-  if (fm.tags && fm.tags.length > 0) {
-    lines.push('tags:')
-    for (const tag of fm.tags) {
-      lines.push(`  - ${tag}`)
     }
   }
 
@@ -192,7 +186,7 @@ export function serializeSpec(spec: SpecFile): string {
     lines.push(spec.content)
   }
 
-  return lines.join('\n')
+  return lines.join('\n') + '\n'
 }
 
 export function updateSpecField(
