@@ -1,8 +1,13 @@
 <script setup lang="ts">
 import { useAppStore, SHELL_OPTIONS } from '../../stores/app'
 import type { ShellType, Theme } from '../../stores/app'
+import { useBrowserStore } from '../../stores/browser'
+import type { SearchEngine } from '../../shared/types'
+import { invoke } from '@tauri-apps/api/core'
 
 const appStore = useAppStore()
+const browserStore = useBrowserStore()
+const runtimeConfig = useRuntimeConfig()
 
 const fileExplorerVisible = computed(() => appStore.fileExplorerVisible)
 const editorVisible = computed(() => appStore.editorVisible)
@@ -84,6 +89,66 @@ onMounted(() => {
   window.addEventListener('keydown', handler)
   onUnmounted(() => window.removeEventListener('keydown', handler))
 })
+
+const dropdownStyle = computed(() => ({
+  background: 'var(--qc-bg-surface)',
+  color: 'var(--qc-text)',
+  border: '1px solid var(--qc-border)',
+  backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a0a0a8' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E\")",
+  backgroundRepeat: 'no-repeat',
+  backgroundPosition: 'right 10px center',
+}))
+
+// ---- Update logic ----
+const updateChecking = ref(false)
+const updateAvailable = ref(false)
+const updateVersion = ref('')
+const updateDownloadUrl = ref('')
+const updateStatus = ref('')
+const updateDownloading = ref(false)
+
+const SEARCH_ENGINES = [
+  { value: 'google' as const, label: 'Google' },
+  { value: 'duckduckgo' as const, label: 'DuckDuckGo' },
+  { value: 'bing' as const, label: 'Bing' },
+  { value: 'brave' as const, label: 'Brave Search' },
+]
+
+async function checkForUpdate() {
+  updateChecking.value = true
+  updateStatus.value = ''
+  try {
+    const info = await invoke<{
+      available: boolean
+      current_version: string
+      latest_version: string
+      download_url: string
+    }>('check_for_update')
+    updateAvailable.value = info.available
+    updateVersion.value = info.latest_version
+    updateDownloadUrl.value = info.download_url
+    if (!info.available) {
+      updateStatus.value = 'You are on the latest version.'
+    }
+  } catch (e: any) {
+    updateStatus.value = `Error: ${e}`
+  } finally {
+    updateChecking.value = false
+  }
+}
+
+async function downloadUpdate() {
+  updateDownloading.value = true
+  updateStatus.value = 'Downloading...'
+  try {
+    await invoke('download_and_install_update', { url: updateDownloadUrl.value })
+    updateStatus.value = 'Installing... The app will restart.'
+  } catch (e: any) {
+    updateStatus.value = `Download failed: ${e}`
+  } finally {
+    updateDownloading.value = false
+  }
+}
 </script>
 
 <template>
@@ -246,22 +311,41 @@ onMounted(() => {
           <div class="text-[10px] uppercase tracking-wider mb-3 font-medium" :style="{ color: 'var(--qc-text-dim)' }">
             Default Terminal Shell
           </div>
-          <div class="space-y-1">
-            <button
+          <select
+            class="w-full px-3 py-2 rounded-lg text-xs font-medium appearance-none cursor-pointer transition-all"
+            :style="dropdownStyle"
+            :value="appStore.defaultShell"
+            @change="appStore.setDefaultShell(($event.target as HTMLSelectElement).value as ShellType)"
+          >
+            <option
               v-for="shell in SHELL_OPTIONS"
               :key="shell.value"
-              class="w-full text-left px-3 py-2 rounded-lg text-xs flex items-center justify-between transition-all"
-              :style="{
-                background: appStore.defaultShell === shell.value ? 'var(--qc-bg-surface)' : 'transparent',
-                color: 'var(--qc-text)',
-                border: appStore.defaultShell === shell.value ? '1px solid var(--qc-border)' : '1px solid transparent',
-              }"
-              @click="appStore.setDefaultShell(shell.value)"
+              :value="shell.value"
             >
-              <span>{{ shell.label }}</span>
-              <span v-if="appStore.defaultShell === shell.value" class="text-[#a0a0a8]">&#10003;</span>
-            </button>
+              {{ shell.label }}
+            </option>
+          </select>
+        </div>
+
+        <!-- Browser -->
+        <div>
+          <div class="text-[10px] uppercase tracking-wider mb-3 font-medium" :style="{ color: 'var(--qc-text-dim)' }">
+            Browser
           </div>
+          <select
+            class="w-full px-3 py-2 rounded-lg text-xs font-medium appearance-none cursor-pointer transition-all"
+            :style="dropdownStyle"
+            :value="browserStore.searchEngine"
+            @change="browserStore.setSearchEngine(($event.target as HTMLSelectElement).value as SearchEngine)"
+          >
+            <option
+              v-for="engine in SEARCH_ENGINES"
+              :key="engine.value"
+              :value="engine.value"
+            >
+              {{ engine.label }}
+            </option>
+          </select>
         </div>
 
         <!-- Canvas -->
@@ -357,6 +441,54 @@ onMounted(() => {
                 {{ appStore.editorVisible ? 'ON' : 'OFF' }}
               </span>
             </button>
+          </div>
+        </div>
+
+        <!-- About / Updates -->
+        <div>
+          <div class="text-[10px] uppercase tracking-wider mb-3 font-medium" :style="{ color: 'var(--qc-text-dim)' }">
+            About
+          </div>
+          <div class="px-3 py-2.5 rounded-lg text-xs space-y-2"
+            :style="{
+              background: 'var(--qc-bg-surface)',
+              color: 'var(--qc-text)',
+              border: '1px solid var(--qc-border)',
+            }"
+          >
+            <div class="flex items-center justify-between">
+              <span :style="{ color: 'var(--qc-text-muted)' }">QuantCode v{{ runtimeConfig.public.appVersion }}</span>
+            </div>
+            <div class="flex gap-2">
+              <button
+                class="px-3 py-1.5 rounded text-xs font-medium transition-all"
+                :style="{
+                  background: 'var(--qc-bg-header)',
+                  color: 'var(--qc-text)',
+                  border: '1px solid var(--qc-border)',
+                }"
+                :disabled="updateChecking"
+                @click="checkForUpdate"
+              >
+                {{ updateChecking ? 'Checking...' : 'Check for Updates' }}
+              </button>
+              <button
+                v-if="updateAvailable && updateDownloadUrl"
+                class="px-3 py-1.5 rounded text-xs font-medium transition-all"
+                :style="{
+                  background: '#a0a0a8',
+                  color: '#fff',
+                  border: '1px solid #a0a0a8',
+                }"
+                :disabled="updateDownloading"
+                @click="downloadUpdate"
+              >
+                {{ updateDownloading ? 'Downloading...' : `Download v${updateVersion}` }}
+              </button>
+            </div>
+            <div v-if="updateStatus" class="text-[10px]" :style="{ color: 'var(--qc-text-muted)' }">
+              {{ updateStatus }}
+            </div>
           </div>
         </div>
       </div>

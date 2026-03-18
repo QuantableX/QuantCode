@@ -254,6 +254,28 @@ onMounted(() => {
             </span>
           </button>
           <button
+            class="w-full text-left px-3 py-2.5 rounded-lg text-xs flex items-center justify-between transition-all"
+            :style="{
+              background: 'var(--qc-bg-surface)',
+              color: 'var(--qc-text)',
+              border: '1px solid var(--qc-border)',
+            }"
+            @click="appStore.toggleSnapCameraToGrid()"
+          >
+            <span>Snap camera to grid</span>
+            <span
+              class="w-8 h-4 rounded-full relative inline-block transition-all"
+              :style="{
+                background: appStore.snapCameraToGrid ? '#a0a0a8' : 'var(--qc-border)',
+              }"
+            >
+              <span
+                class="absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all"
+                :style="{ left: appStore.snapCameraToGrid ? '18px' : '2px' }"
+              />
+            </span>
+          </button>
+          <button
             class="w-full text-left px-3 py-2.5 rounded-lg text-xs flex items-center justify-between transition-all mt-1"
             :style="{
               background: 'var(--qc-bg-surface)',
