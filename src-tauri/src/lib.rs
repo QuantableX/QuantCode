@@ -45,6 +45,8 @@ pub fn run() {
             commands::browser::get_browser_url,
             commands::browser::set_browser_clip_region,
             commands::browser::find_in_browser,
+            commands::browser::browser_request_new_tab,
+            commands::browser::browser_disable_fullscreen,
             // Browser data
             commands::browser_data::load_browser_data,
             commands::browser_data::save_browser_data,

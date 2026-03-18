@@ -94,6 +94,9 @@ const findQuery = ref('')
 // History panel state
 const historyPanelVisible = ref(false)
 
+// Fullscreen state — when content goes fullscreen, we expand the webview to fill the window
+const isContentFullscreen = ref(false)
+
 // ---- Webview label helper ----
 
 function webviewLabelForTab(tabId: string): string {
@@ -197,8 +200,11 @@ async function createWebviewForTab(tabId: string, url: string): Promise<Webview 
         }
       } catch { /* ignore */ }
 
+      // Prevent WebView2 from making the Tauri window fullscreen
+      invoke('browser_disable_fullscreen', { label }).catch(() => {})
+
       if (isActive) {
-        injectCtrlWheelForwarder(label)
+        injectBrowserScripts(label)
       }
 
       return existing
@@ -221,8 +227,10 @@ async function createWebviewForTab(tabId: string, url: string): Promise<Webview 
           wv.hide().catch(() => {})
         }
         if (isActive) {
-          setTimeout(() => injectCtrlWheelForwarder(label), 1000)
+          setTimeout(() => injectBrowserScripts(label), 1000)
         }
+        // Prevent WebView2 from making the Tauri window fullscreen
+        invoke('browser_disable_fullscreen', { label }).catch(() => {})
         resolve(wv)
       })
 
@@ -237,7 +245,8 @@ async function createWebviewForTab(tabId: string, url: string): Promise<Webview 
   }
 }
 
-async function addTab(url?: string) {
+async function addTab(url?: string, options?: { background?: boolean }) {
+  const background = options?.background ?? false
   const tabId = `tab-${Date.now()}-${nextTabNum++}`
   const tabUrl = url ?? 'https://www.google.com'
   const normalizedUrl = normalizeUrl(tabUrl)
@@ -250,14 +259,17 @@ async function addTab(url?: string) {
   }
 
   tabs.value.push(newTab)
-  activeTabId.value = tabId
-  urlInput.value = normalizedUrl
-  currentUrl.value = normalizedUrl
 
-  // Hide the previously active webview
-  for (const [id, state] of tabWebviews) {
-    if (id !== tabId) {
-      state.webview.hide().catch(() => {})
+  if (!background) {
+    activeTabId.value = tabId
+    urlInput.value = normalizedUrl
+    currentUrl.value = normalizedUrl
+
+    // Hide the previously active webview
+    for (const [id, state] of tabWebviews) {
+      if (id !== tabId) {
+        state.webview.hide().catch(() => {})
+      }
     }
   }
 
@@ -268,7 +280,7 @@ async function addTab(url?: string) {
       history: [normalizedUrl],
       historyIndex: 0,
     })
-    webviewReady.value = true
+    if (!background) webviewReady.value = true
     newTab.isLoading = false
   } else {
     newTab.isLoading = false
@@ -278,9 +290,11 @@ async function addTab(url?: string) {
   try {
     const hostname = new URL(normalizedUrl).hostname
     newTab.title = hostname
-    canvasStore.updateWindow(workspaceId.value, props.window.id, {
-      title: `Browser - ${hostname}`,
-    })
+    if (!background) {
+      canvasStore.updateWindow(workspaceId.value, props.window.id, {
+        title: `Browser - ${hostname}`,
+      })
+    }
   } catch { /* invalid URL */ }
 
   // Add to browser history store
@@ -682,6 +696,13 @@ function syncWebviewPosition() {
     return
   }
 
+  // When content is in fullscreen, the webview fills the entire window.
+  // Skip normal positioning/clipping so we don't shrink it back.
+  if (isContentFullscreen.value) {
+    rafId = requestAnimationFrame(syncWebviewPosition)
+    return
+  }
+
   const webview = state.webview
   const rect = contentRef.value.getBoundingClientRect()
   const x = Math.round(rect.left)
@@ -776,6 +797,9 @@ function startUrlPolling() {
     const label = webviewLabelForTab(tabId)
     try {
       const actualUrl = await invoke<string>('get_browser_url', { label })
+      // Re-inject scripts after page navigation (JS context resets)
+      injectBrowserScripts(label)
+
       if (actualUrl && actualUrl !== currentUrl.value) {
         currentUrl.value = actualUrl
         urlInput.value = actualUrl
@@ -826,11 +850,12 @@ function stopUrlPolling() {
 
 // ---- Inject Ctrl+Wheel forwarding into the child webview ----
 
-async function injectCtrlWheelForwarder(label: string) {
+async function injectBrowserScripts(label: string) {
   try {
     await invoke('eval_browser', {
       label,
       js: `
+        // ---- Ctrl+Wheel forwarding (canvas zoom) ----
         if (!window.__qcWheelInjected) {
           window.__qcWheelInjected = true;
           document.addEventListener('wheel', function(e) {
@@ -846,6 +871,27 @@ async function injectCtrlWheelForwarder(label: string) {
             }
           }, { passive: false, capture: true });
         }
+
+        // ---- Middle-click on links → open in new tab ----
+        if (!window.__qcMiddleClickInjected) {
+          window.__qcMiddleClickInjected = true;
+          document.addEventListener('auxclick', function(e) {
+            if (e.button === 1) {
+              var target = e.target;
+              while (target && target.tagName !== 'A') {
+                target = target.parentElement;
+              }
+              if (target && target.href && target.href.startsWith('http')) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (window.__TAURI_INTERNALS__) {
+                  window.__TAURI_INTERNALS__.invoke('browser_request_new_tab', { url: target.href }).catch(function(){});
+                }
+              }
+            }
+          }, { capture: true });
+        }
+
       `,
     })
   } catch {
@@ -853,8 +899,51 @@ async function injectCtrlWheelForwarder(label: string) {
   }
 }
 
+// Listen for fullscreen state changes from the Rust handler
+let unlistenFullscreen: (() => void) | null = null
+
+async function setupFullscreenListener() {
+  unlistenFullscreen = await listen<{ label: string; isFullscreen: boolean }>(
+    'browser-fullscreen-changed',
+    (event) => {
+      // Only handle events for webviews belonging to this browser window
+      const activeLabel = webviewLabelForTab(activeTabId.value)
+      if (event.payload.label !== activeLabel) return
+
+      isContentFullscreen.value = event.payload.isFullscreen
+
+      if (event.payload.isFullscreen) {
+        // Entering fullscreen: expand webview to fill the entire app window,
+        // remove clip region so the video surface renders properly
+        const state = tabWebviews.get(activeTabId.value)
+        if (state) {
+          const w = window.innerWidth
+          const h = window.innerHeight
+          state.webview.setPosition(new LogicalPosition(0, 0)).catch(() => {})
+          state.webview.setSize(new LogicalSize(w, h)).catch(() => {})
+          // Remove clip region
+          invoke('set_browser_clip_region', {
+            label: activeLabel,
+            fullWidth: 0,
+            fullHeight: 0,
+            obscuringRects: [],
+          }).catch(() => {})
+        }
+        // Reset sync so it doesn't override our fullscreen positioning
+        lastRect = { x: 0, y: 0, w: window.innerWidth, h: window.innerHeight }
+        lastClipKey = ''
+      } else {
+        // Leaving fullscreen: force a position re-sync on next frame
+        lastRect = { x: 0, y: 0, w: 0, h: 0 }
+        lastClipKey = ''
+      }
+    },
+  )
+}
+
 // Listen for forwarded Ctrl+Wheel events from child webviews
 let unlistenWheel: (() => void) | null = null
+let unlistenMiddleClick: (() => void) | null = null
 
 async function setupWheelListener() {
   unlistenWheel = await listen<{ deltaY: number; clientX: number; clientY: number }>(
@@ -870,6 +959,17 @@ async function setupWheelListener() {
         cancelable: true,
       })
       document.dispatchEvent(syntheticEvent)
+    },
+  )
+}
+
+async function setupMiddleClickListener() {
+  unlistenMiddleClick = await listen<string>(
+    'browser-new-tab-request',
+    (event) => {
+      if (event.payload) {
+        addTab(event.payload, { background: true })
+      }
     },
   )
 }
@@ -941,11 +1041,14 @@ onMounted(async () => {
       rafId = requestAnimationFrame(syncWebviewPosition)
     }
 
-    // Set up listener for Ctrl+Wheel forwarding from child webview
+    // Set up listeners for events forwarded from child webview
+    await setupFullscreenListener()
     await setupWheelListener()
+    await setupMiddleClickListener()
 
     // Start polling for URL changes from in-webview navigation
     startUrlPolling()
+
 
   } catch (err) {
     console.error('Failed to initialize browser tabs:', err)
@@ -968,9 +1071,14 @@ onUnmounted(() => {
   // Stop URL polling
   stopUrlPolling()
 
-  // Clean up event listener
+
+  // Clean up event listeners
+  unlistenFullscreen?.()
+  unlistenFullscreen = null
   unlistenWheel?.()
   unlistenWheel = null
+  unlistenMiddleClick?.()
+  unlistenMiddleClick = null
 
   // Destroy all tab webviews (close stops media, frees OS processes)
   for (const [tabId, state] of tabWebviews) {

@@ -38,6 +38,7 @@ function truncate(text: string, max: number): string {
           color: tab.id === activeTabId ? 'var(--qc-text)' : 'var(--qc-text-dim)',
         }"
         @click="emit('switch', tab.id)"
+        @auxclick.middle.prevent="emit('close', tab.id)"
       >
         <!-- Loading spinner -->
         <svg

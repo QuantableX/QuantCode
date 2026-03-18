@@ -1,4 +1,4 @@
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 #[derive(serde::Deserialize)]
 pub struct ClipRect {
@@ -73,9 +73,6 @@ unsafe fn apply_window_region(
     full_height: i32,
     obscuring_rects: &[ClipRect],
 ) {
-    // Get the container HWND from the WebView2 controller.
-    // ParentWindow is a COM method with an out-pointer; HWND is repr(transparent)
-    // wrapping a pointer-sized value, so we can safely cast through isize.
     let controller = wv.controller();
     let mut hwnd: isize = 0;
     let _ = controller.ParentWindow(&mut hwnd as *mut isize as *mut _);
@@ -84,20 +81,16 @@ unsafe fn apply_window_region(
     }
 
     if obscuring_rects.is_empty() {
-        // No obscuring — remove region to show full webview
         SetWindowRgn(hwnd, 0, 1);
     } else {
-        // Start with the full webview rectangle
         let full_rgn = CreateRectRgn(0, 0, full_width, full_height);
 
-        // Subtract each obscuring rectangle
         for r in obscuring_rects {
             let obs_rgn = CreateRectRgn(r.x, r.y, r.x + r.w, r.y + r.h);
             CombineRgn(full_rgn, full_rgn, obs_rgn, RGN_DIFF);
             DeleteObject(obs_rgn);
         }
 
-        // SetWindowRgn takes ownership of the region handle
         SetWindowRgn(hwnd, full_rgn, 1);
     }
 }
@@ -136,4 +129,91 @@ pub fn find_in_browser(app: AppHandle, label: String, query: String, forward: bo
     };
 
     webview.eval(&js).map_err(|e| e.to_string())
+}
+
+/// Called from injected JS in child webviews to open a link in a new tab.
+/// Uses app.emit() so the event reaches the main webview's listen().
+#[tauri::command]
+pub fn browser_request_new_tab(app: AppHandle, url: String) -> Result<(), String> {
+    app.emit("browser-new-tab-request", &url)
+        .map_err(|e| e.to_string())
+}
+
+/// Hook into WebView2's ContainsFullScreenElementChanged event.
+/// Instead of letting the window go fullscreen, we emit events to the frontend
+/// so it can expand/restore the webview within the window bounds.
+#[tauri::command]
+pub fn browser_disable_fullscreen(app: AppHandle, label: String) -> Result<(), String> {
+    let webview = app
+        .get_webview(&label)
+        .ok_or_else(|| format!("Webview '{}' not found", label))?;
+
+    let window = webview.window();
+    let label_clone = label.clone();
+
+    #[cfg(target_os = "windows")]
+    {
+        let app_clone = app.clone();
+        webview
+            .with_webview(move |wv| {
+                unsafe { hook_fullscreen_changed(wv, window, app_clone, label_clone) };
+            })
+            .map_err(|e| format!("with_webview: {}", e))?;
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn hook_fullscreen_changed(
+    wv: tauri::webview::PlatformWebview,
+    window: tauri::Window,
+    app: AppHandle,
+    label: String,
+) {
+    use webview2_com::ContainsFullScreenElementChangedEventHandler;
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2;
+
+    let controller = wv.controller();
+
+    let core_wv: Result<ICoreWebView2, _> = controller.CoreWebView2();
+    let core_wv = match core_wv {
+        Ok(wv) => wv,
+        Err(_) => return,
+    };
+
+    let handler = ContainsFullScreenElementChangedEventHandler::create(Box::new(
+        move |core_wv_inner, _args| {
+            // Prevent the Tauri window from going OS-fullscreen
+            let _ = window.set_fullscreen(false);
+
+            // Check whether content is entering or leaving fullscreen
+            let mut is_fullscreen = false;
+            if let Some(ref wv) = core_wv_inner {
+                let mut val: i32 = 0;
+                if wv.ContainsFullScreenElement(&mut val as *mut i32 as *mut _).is_ok() {
+                    is_fullscreen = val != 0;
+                }
+            }
+
+            // Emit event to frontend so it can expand/restore the webview
+            let _ = app.emit("browser-fullscreen-changed", serde_json::json!({
+                "label": label,
+                "isFullscreen": is_fullscreen,
+            }));
+
+            // Also set fullscreen false after a short delay to counter any
+            // Tauri built-in handler that may fire after us
+            let w = window.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                let _ = w.set_fullscreen(false);
+            });
+
+            Ok(())
+        },
+    ));
+
+    let mut token: i64 = 0;
+    let _ = core_wv.add_ContainsFullScreenElementChanged(&handler, &mut token);
 }
