@@ -20,6 +20,10 @@ provide('canvasRef', canvasRef)
 const contextMenuVisible = computed(() => contextMenu.value.visible)
 provide('contextMenuVisible', contextMenuVisible)
 
+// Clipboard for window copy/paste
+const copiedWindow = ref<CanvasWindowType | null>(null)
+provide('copiedWindow', copiedWindow)
+
 // Pan/zoom state
 const isPanning = ref(false)
 const isSpacePanning = ref(false)
@@ -149,6 +153,18 @@ useEventListener(document, 'wheel', (e: WheelEvent) => {
   e.stopPropagation()
   doZoom(e)
 }, { capture: true, passive: false })
+
+// ---- Ctrl+V to paste copied window ----
+useEventListener(window, 'keydown', (e: KeyboardEvent) => {
+  if (e.ctrlKey && e.key === 'v' && !e.shiftKey && !e.altKey) {
+    // Only paste window when focus is on canvas or a window header, not inside terminals/inputs
+    const target = e.target as HTMLElement
+    if (target.closest('.xterm') || target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return
+    if (!copiedWindow.value) return
+    e.preventDefault()
+    pasteWindow()
+  }
+})
 
 // ---- Space key for panning ----
 useEventListener(window, 'keydown', (e: KeyboardEvent) => {
@@ -368,6 +384,42 @@ useEventListener(window, 'qc-open-file-on-canvas', ((e: CustomEvent) => {
   createFileWindow(filePath, centerX, centerY)
 }) as EventListener)
 
+// ---- Window copy/paste ----
+function pasteWindow() {
+  if (!copiedWindow.value || !workspaceId.value) return
+
+  const source = copiedWindow.value
+
+  const win: CanvasWindowType = {
+    id: uuidv4(),
+    type: source.type,
+    title: source.title,
+    position: {
+      x: source.position.x,
+      y: source.position.y,
+      width: source.position.width,
+      height: source.position.height,
+    },
+    status: 'idle',
+    minimized: false,
+    zIndex: 0,
+    ...(source.type === 'agent' && source.agentConfig
+      ? { agentConfig: { ...source.agentConfig } }
+      : {}),
+    ...(source.type === 'terminal' ? { terminalId: uuidv4() } : {}),
+    ...(source.type === 'file' && source.fileConfig
+      ? { fileConfig: { ...source.fileConfig } }
+      : {}),
+    ...(source.type === 'browser' && source.browserConfig
+      ? { browserConfig: { ...source.browserConfig } }
+      : {}),
+  }
+
+  canvasStore.addWindow(workspaceId.value, win)
+}
+
+provide('pasteWindow', pasteWindow)
+
 useEventListener(window, 'click', () => {
   if (contextMenu.value.visible) closeContextMenu()
 })
@@ -400,13 +452,8 @@ useEventListener(window, 'click', () => {
       </span>
     </div>
 
-    <!-- Navigation hints overlay -->
-    <div v-if="appStore.canvasHints" class="fixed top-14 left-1/2 -translate-x-1/2 z-10 text-[10px] pointer-events-none select-none" :style="{ color: 'var(--qc-text-dim)' }">
-      right click: new agent &middot; drag header: move &middot; scroll: pan
-    </div>
-
     <!-- Zoom / tile count overlay -->
-    <div class="fixed bottom-8 left-1/2 -translate-x-1/2 z-10 text-[10px] pointer-events-none select-none px-2 py-1 rounded" :style="{ color: 'var(--qc-text-dim)', background: 'color-mix(in srgb, var(--qc-bg) 80%, transparent)' }">
+    <div class="absolute top-2 left-1/2 -translate-x-1/2 z-10 text-[10px] pointer-events-none select-none px-2 py-1 rounded" :style="{ color: 'var(--qc-text-dim)', background: 'color-mix(in srgb, var(--qc-bg) 80%, transparent)' }">
       zoom {{ zoomPercent }}% &middot; {{ tileCount }} tiles
     </div>
 
@@ -475,6 +522,16 @@ useEventListener(window, 'click', () => {
       >
         <span class="text-purple-400">&#128196;</span> Open File on Canvas...
       </button>
+      <template v-if="copiedWindow">
+        <div :style="{ borderTop: '1px solid var(--qc-border)', margin: '4px 0' }" />
+        <button
+          class="w-full text-left px-4 py-2 text-xs transition-colors flex items-center gap-2 hover:brightness-125"
+          :style="{ color: 'var(--qc-text)' }"
+          @click="pasteWindow(); closeContextMenu()"
+        >
+          <span class="text-emerald-400">&#9112;</span> Paste Window
+        </button>
+      </template>
     </div>
   </div>
 </template>

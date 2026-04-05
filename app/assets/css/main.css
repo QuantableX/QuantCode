@@ -35,6 +35,8 @@
   --qc-scrollbar-thumb-hover: #4a4a52;
   --qc-dot-grid: #3a3a42;
   --qc-dot-grid-bright: #505058;
+  --qc-accent: #6e8efb;
+  --qc-font-mono: 'SF Mono', 'Cascadia Code', 'Fira Code', 'JetBrains Mono', ui-monospace, monospace;
 }
 
 /* ---- Light theme ---- */
@@ -55,6 +57,7 @@
   --qc-scrollbar-thumb-hover: #9898a2;
   --qc-dot-grid: #adadb5;
   --qc-dot-grid-bright: #8d8d97;
+  --qc-accent: #4f6ef7;
 }
 
 /* ============= Base Styles ============= */
@@ -203,6 +206,9 @@ html, body, #__nuxt {
 
 /* ============= File Tree ============= */
 
-.file-tree-row:hover {
-  background-color: var(--qc-bg-header);
+
+/* Pointer-based file drag */
+body.qc-file-dragging {
+  cursor: grabbing !important;
+  user-select: none !important;
 }

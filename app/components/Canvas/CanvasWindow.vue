@@ -82,6 +82,9 @@ function startDrag(e: MouseEvent) {
   e.preventDefault()
   e.stopPropagation()
 
+  // Focus the header so Ctrl+C works for copying
+  ;(e.currentTarget as HTMLElement)?.focus()
+
   bringToFront()
   isDragging.value = true
   dragStart.value = { x: e.clientX, y: e.clientY }
@@ -270,6 +273,15 @@ async function attachFile() {
   }
 }
 
+// ---- Copy window ----
+const copiedWindow = inject<Ref<CanvasWindowType | null>>('copiedWindow')
+
+function copyWindow() {
+  if (copiedWindow) {
+    copiedWindow.value = { ...props.window, position: { ...props.window.position } }
+  }
+}
+
 function onWindowClick() {
   bringToFront()
 }
@@ -285,9 +297,11 @@ function onWindowClick() {
   >
     <!-- Header -->
     <div
-      class="h-8 flex items-center px-3 gap-2 flex-shrink-0 cursor-move select-none"
+      class="h-8 flex items-center px-3 gap-2 flex-shrink-0 cursor-move select-none outline-none"
       :style="{ background: 'var(--qc-bg-header)', borderBottom: '1px solid var(--qc-border)' }"
+      tabindex="0"
       @mousedown="startDrag"
+      @keydown.ctrl.c.prevent.stop="copyWindow"
     >
       <!-- Icon + Title -->
       <span class="text-xs text-[#a0a0a8]">{{ typeIcon }}</span>
@@ -313,6 +327,19 @@ function onWindowClick() {
         :style="{ backgroundColor: statusColor }"
         :title="window.status"
       />
+
+      <!-- Copy -->
+      <button
+        class="w-5 h-5 flex items-center justify-center transition-colors rounded text-xs"
+        :style="{ color: 'var(--qc-text-muted)' }"
+        @mousedown.stop
+        @click.stop="copyWindow"
+        title="Copy window"
+      >
+        <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+        </svg>
+      </button>
 
       <!-- Minimize -->
       <button

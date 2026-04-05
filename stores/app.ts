@@ -44,6 +44,7 @@ function extractFileName(filePath: string): string {
 
 export type Theme = 'dark' | 'light'
 export type ShellType = 'powershell' | 'cmd' | 'bash' | 'wsl' | 'git-bash'
+export type PanelToggleStyle = 'both' | 'modern' | 'classic'
 
 export const SHELL_OPTIONS: { value: ShellType; label: string; path: string }[] = [
   { value: 'powershell', label: 'PowerShell', path: 'powershell.exe' },
@@ -69,6 +70,8 @@ export const useAppStore = defineStore('app', () => {
   const fontSize = ref<number>(typeof localStorage !== 'undefined' ? Number(localStorage.getItem('qc-font-size')) || 15 : 15)
   const canvasHints = ref<boolean>(typeof localStorage !== 'undefined' ? localStorage.getItem('qc-canvas-hints') !== 'false' : true)
   const editorMinimap = ref<boolean>(typeof localStorage !== 'undefined' ? localStorage.getItem('qc-editor-minimap') !== 'false' : true)
+  const notesBarVisible = ref(false)
+  const panelToggleStyle = ref<PanelToggleStyle>((typeof localStorage !== 'undefined' && localStorage.getItem('qc-panel-toggle-style') as PanelToggleStyle) || 'both')
 
   // ---- Getters ----
   const activeTab = computed<EditorTab | undefined>(() => {
@@ -150,6 +153,17 @@ export const useAppStore = defineStore('app', () => {
     canvasHints.value = !canvasHints.value
     if (typeof localStorage !== 'undefined') {
       localStorage.setItem('qc-canvas-hints', String(canvasHints.value))
+    }
+  }
+
+  function toggleNotesBar(): void {
+    notesBarVisible.value = !notesBarVisible.value
+  }
+
+  function setPanelToggleStyle(style: PanelToggleStyle): void {
+    panelToggleStyle.value = style
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('qc-panel-toggle-style', style)
     }
   }
 
@@ -292,6 +306,8 @@ export const useAppStore = defineStore('app', () => {
     fontSize,
     canvasHints,
     editorMinimap,
+    notesBarVisible,
+    panelToggleStyle,
     // Getters
     activeTab,
     // Actions
@@ -307,6 +323,8 @@ export const useAppStore = defineStore('app', () => {
     toggleSnapCameraToGrid,
     toggleCanvasHints,
     toggleEditorMinimap,
+    toggleNotesBar,
+    setPanelToggleStyle,
     setFontSize,
     applyFontSize,
     applyTheme,

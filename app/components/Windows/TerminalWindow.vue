@@ -134,6 +134,45 @@ onMounted(async () => {
       term.options.theme = newTheme === 'light' ? lightTheme : darkTheme
     })
 
+    // Shift+Enter → send newline via bracketed paste so CLI agents
+    // (Claude Code, Codex, etc.) insert a new line instead of submitting
+    term.attachCustomKeyEventHandler((event: KeyboardEvent) => {
+      if (event.type === 'keydown' && event.key === 'Enter' && event.shiftKey) {
+        if (terminalIdRef.value) {
+          invoke('write_terminal', {
+            id: terminalIdRef.value,
+            data: '\x1b[200~\n\x1b[201~',
+          }).catch(() => {})
+        }
+        return false
+      }
+
+      // Ctrl+C → copy selection to clipboard, or send SIGINT if nothing selected
+      if (event.type === 'keydown' && event.key === 'c' && event.ctrlKey && !event.shiftKey && !event.altKey) {
+        const selection = term.getSelection()
+        if (selection) {
+          navigator.clipboard.writeText(selection).catch(() => {})
+          term.clearSelection()
+        } else if (terminalIdRef.value) {
+          invoke('write_terminal', { id: terminalIdRef.value, data: '\x03' }).catch(() => {})
+        }
+        return false
+      }
+
+      // Ctrl+V → paste from clipboard into terminal
+      if (event.type === 'keydown' && event.key === 'v' && event.ctrlKey && !event.shiftKey && !event.altKey) {
+        event.preventDefault()
+        navigator.clipboard.readText().then((text) => {
+          if (text && terminalIdRef.value) {
+            invoke('write_terminal', { id: terminalIdRef.value, data: text }).catch(() => {})
+          }
+        }).catch(() => {})
+        return false
+      }
+
+      return true
+    })
+
     // Send user input to Tauri PTY
     term.onData((data: string) => {
       if (!terminalIdRef.value) return

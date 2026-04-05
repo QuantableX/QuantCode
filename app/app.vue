@@ -31,6 +31,11 @@ useEventListener(window, 'keydown', (e: KeyboardEvent) => {
     e.preventDefault()
     appStore.toggleEditor()
   }
+  // Ctrl+J: toggle notes bar
+  if (e.ctrlKey && !e.shiftKey && e.key === 'j') {
+    e.preventDefault()
+    appStore.toggleNotesBar()
+  }
   // Ctrl+Tab: cycle editor tabs
   if (e.ctrlKey && e.key === 'Tab') {
     e.preventDefault()

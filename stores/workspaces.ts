@@ -55,6 +55,16 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     saveToDisk()
   }
 
+  function reorderWorkspace(fromIndex: number, toIndex: number): void {
+    if (fromIndex === toIndex) return
+    if (fromIndex < 0 || toIndex < 0) return
+    if (fromIndex >= workspaces.value.length || toIndex >= workspaces.value.length) return
+
+    const [moved] = workspaces.value.splice(fromIndex, 1)
+    workspaces.value.splice(toIndex, 0, moved)
+    saveToDisk()
+  }
+
   async function loadFromDisk(): Promise<void> {
     try {
       const raw = await invoke<string>('load_workspaces')
@@ -89,6 +99,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     removeWorkspace,
     setActiveWorkspace,
     updateWorkspace,
+    reorderWorkspace,
     loadFromDisk,
     saveToDisk,
   }

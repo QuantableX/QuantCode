@@ -10,7 +10,7 @@ tags:
   - agent
   - security
 createdAt: 2026-03-18T20:50:00.000Z
-updatedAt: 2026-03-18T20:50:00.000Z
+updatedAt: 2026-04-05T17:14:01.341Z
 ---
 
 When agents request tool execution (file writes, commands, git commits), users need to see what's being done and approve/deny it. The approval handler exists in useAgent but no visible UI dialog is wired up.

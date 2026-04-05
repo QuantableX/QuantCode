@@ -11,7 +11,7 @@ tags:
   - agent
   - core
 createdAt: 2026-03-18T20:50:00.000Z
-updatedAt: 2026-03-18T20:50:00.000Z
+updatedAt: 2026-04-05T17:14:04.265Z
 ---
 
 The orchestrator and role system exist in code but are not wired into the UI or agent execution flow. All agents currently operate as standalone general-purpose agents with no coordination.

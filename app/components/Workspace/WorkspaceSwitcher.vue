@@ -16,6 +16,90 @@ const dropdownRef = ref<HTMLElement | null>(null)
 const renamingId = ref<string | null>(null)
 const renameValue = ref('')
 
+// Uniform tab width based on longest workspace name
+const maxTabWidth = computed(() => {
+  const names = workspacesStore.workspaces.map(w => w.name)
+  if (!names.length) return 0
+  const longest = names.reduce((a, b) => a.length > b.length ? a : b, '')
+  // Approximate: ~7.2px per char at 12px/500 weight + 28px padding
+  return Math.ceil(longest.length * 7.2) + 28
+})
+
+// ── Drag-and-drop reorder (pointer events) ──
+const dragTabId = ref<string | null>(null)
+const dropBeforeTabId = ref<string | null>(null)
+const dropAtEnd = ref(false)
+let tabDragMoveHandler: ((e: PointerEvent) => void) | null = null
+let tabDragUpHandler: ((e: PointerEvent) => void) | null = null
+let tabDragStartX = 0
+let tabDragStartY = 0
+let tabDragDidMove = false
+
+function findDropTabAtPoint(x: number, draggingId: string): { beforeId: string | null } {
+  const items = document.querySelectorAll('[data-tab-drag-id]')
+  for (const el of items) {
+    const id = (el as HTMLElement).dataset.tabDragId!
+    if (id === draggingId) continue
+    const rect = el.getBoundingClientRect()
+    const mid = rect.left + rect.width / 2
+    if (x < mid) return { beforeId: id }
+  }
+  return { beforeId: null }
+}
+
+function onTabPointerDown(e: PointerEvent, tabId: string) {
+  if (e.button !== 0) return
+  const target = e.target as HTMLElement
+  if (target.closest('.tab-close, input')) return
+
+  e.preventDefault()
+  tabDragStartX = e.clientX
+  tabDragStartY = e.clientY
+  tabDragDidMove = false
+
+  tabDragMoveHandler = (me: PointerEvent) => {
+    const dx = me.clientX - tabDragStartX
+    const dy = me.clientY - tabDragStartY
+    if (!tabDragDidMove && Math.abs(dx) + Math.abs(dy) < 4) return
+    tabDragDidMove = true
+    dragTabId.value = tabId
+    document.body.classList.add('tab-dragging')
+
+    const target = findDropTabAtPoint(me.clientX, tabId)
+    dropBeforeTabId.value = target.beforeId
+    dropAtEnd.value = target.beforeId === null
+  }
+
+  tabDragUpHandler = () => {
+    document.removeEventListener('pointermove', tabDragMoveHandler!, true)
+    document.removeEventListener('pointerup', tabDragUpHandler!, true)
+    document.body.classList.remove('tab-dragging')
+
+    if (tabDragDidMove && dragTabId.value) {
+      const ids = workspacesStore.workspaces.map(w => w.id)
+      const fromIdx = ids.indexOf(dragTabId.value)
+      if (fromIdx >= 0) {
+        ids.splice(fromIdx, 1)
+        if (dropBeforeTabId.value) {
+          const toIdx = ids.indexOf(dropBeforeTabId.value)
+          ids.splice(toIdx, 0, dragTabId.value)
+        } else {
+          ids.push(dragTabId.value)
+        }
+        const newIdx = ids.indexOf(dragTabId.value)
+        workspacesStore.reorderWorkspace(fromIdx, newIdx)
+      }
+    }
+
+    dragTabId.value = null
+    dropBeforeTabId.value = null
+    dropAtEnd.value = false
+  }
+
+  document.addEventListener('pointermove', tabDragMoveHandler, true)
+  document.addEventListener('pointerup', tabDragUpHandler, true)
+}
+
 onClickOutside(dropdownRef, () => {
   dropdownOpenId.value = null
 })
@@ -114,14 +198,15 @@ onUnmounted(() => {
 <template>
   <div class="titlebar">
     <!-- Left: Logo container -->
-    <div class="titlebar-logo-section">
+    <div class="titlebar-logo-section" style="-webkit-app-region: no-drag; cursor: pointer;" @click="openNewWorkspace" title="Open workspace">
       <img :src="logoUrl" alt="QuantCode" class="titlebar-logo" />
     </div>
 
     <!-- Center: Workspace tabs (VS Code style) -->
     <div class="titlebar-tabs-section">
-      <!-- Explorer toggle (far left of workspace area) -->
+      <!-- Explorer toggle (far left of workspace area) — hidden in modern toggle style -->
       <button
+        v-if="appStore.panelToggleStyle !== 'modern'"
         class="sidebar-toggle sidebar-toggle-left"
         :class="{ 'sidebar-toggle-active': appStore.fileExplorerVisible }"
         title="Toggle Explorer (Ctrl+B)"
@@ -139,6 +224,12 @@ onUnmounted(() => {
           v-for="ws in workspacesStore.workspaces"
           :key="ws.id"
           class="relative flex items-center flex-shrink-0"
+          :class="{
+            'drop-before': dropBeforeTabId === ws.id,
+            'dragging': dragTabId === ws.id,
+          }"
+          :data-tab-drag-id="ws.id"
+          @pointerdown="onTabPointerDown($event, ws.id)"
         >
           <!-- Rename input -->
           <template v-if="renamingId === ws.id">
@@ -154,16 +245,12 @@ onUnmounted(() => {
             <button
               class="workspace-tab"
               :class="{ active: ws.id === workspacesStore.activeWorkspaceId }"
+              :style="{ width: maxTabWidth + 'px' }"
               @click="switchWorkspace(ws.id)"
               @mousedown.middle.prevent="closeWorkspace(ws.id)"
               @contextmenu.prevent="toggleDropdown(ws.id, $event)"
             >
-              <span class="truncate max-w-[140px]">{{ ws.name }}</span>
-              <span
-                class="tab-close"
-                title="Close workspace"
-                @click.stop="closeWorkspace(ws.id)"
-              >&#10005;</span>
+              <span class="truncate">{{ ws.name }}</span>
             </button>
 
             <!-- Context menu (right-click) -->
@@ -180,16 +267,11 @@ onUnmounted(() => {
           </template>
         </div>
 
-        <!-- New workspace button (inside tab bar) -->
-        <button
-          class="new-tab-btn"
-          title="Open workspace folder"
-                    @click="openNewWorkspace"
-        >+</button>
       </div>
 
-      <!-- Editor toggle (far right of workspace area) -->
+      <!-- Editor toggle (far right of workspace area) — hidden in modern toggle style -->
       <button
+        v-if="appStore.panelToggleStyle !== 'modern'"
         class="sidebar-toggle sidebar-toggle-right"
         :class="{ 'sidebar-toggle-active': appStore.editorVisible }"
         title="Toggle Editor (Ctrl+Shift+B)"
@@ -282,8 +364,8 @@ onUnmounted(() => {
 }
 
 .sidebar-toggle-active {
-  color: var(--qc-text-muted);
-  background: var(--qc-bg-header);
+  color: var(--qc-text-dim);
+  background: transparent;
 }
 
 .sidebar-toggle-icon {
@@ -319,6 +401,7 @@ onUnmounted(() => {
 .tabs-scroll {
   display: flex;
   align-items: stretch;
+  justify-content: center;
   gap: 0;
   overflow-x: auto;
   flex: 1;
@@ -327,13 +410,16 @@ onUnmounted(() => {
 .workspace-tab {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  padding: 0 6px 0 14px;
+  padding: 0 14px;
   font-size: 12px;
   font-weight: 500;
   color: var(--qc-text-muted);
   background: transparent;
   border: none;
+  border-left: 1px solid var(--qc-border);
+  border-right: 1px solid var(--qc-border);
   border-bottom: 2px solid transparent;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -374,6 +460,20 @@ onUnmounted(() => {
 .tab-close:hover {
   color: var(--qc-text);
   background: rgba(255, 255, 255, 0.1);
+}
+
+/* ---- Drag-and-drop reorder ---- */
+.dragging {
+  opacity: 0.4;
+}
+
+.drop-before {
+  box-shadow: inset 2px 0 0 0 var(--qc-text);
+}
+
+:global(body.tab-dragging) {
+  user-select: none;
+  cursor: grabbing;
 }
 
 .new-tab-btn {

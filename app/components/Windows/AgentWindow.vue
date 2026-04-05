@@ -135,6 +135,13 @@ function onInputKeydown(e: KeyboardEvent) {
   }
 }
 
+function autoGrowTextarea() {
+  const el = inputRef.value
+  if (!el) return
+  el.style.height = 'auto'
+  el.style.height = Math.min(el.scrollHeight, 120) + 'px'
+}
+
 function updateModel() {
   if (!currentSession.value) return
   currentSession.value.config.model = selectedModel.value
@@ -229,6 +236,7 @@ watch(selectedModel, () => updateModel())
           :style="{ background: 'var(--qc-bg-input)', border: '1px solid var(--qc-border)', color: 'var(--qc-text)' }"
           :disabled="isStreaming"
           @keydown="onInputKeydown"
+          @input="autoGrowTextarea"
         />
         <button
           v-if="isStreaming"

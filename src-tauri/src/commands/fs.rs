@@ -130,6 +130,46 @@ pub fn read_dir_tree(path: String, gitignore: bool) -> Result<Vec<FileEntry>, St
     }
 
     let mut result = children_map.remove(&root).unwrap_or_default();
+
+    // Always include .quantcode/ even if gitignored — read it separately if missing
+    let qc_dir = root.join(".quantcode");
+    if qc_dir.is_dir() && !result.iter().any(|e| e.name == ".quantcode") {
+        fn read_dir_recursive(dir: &Path) -> Vec<FileEntry> {
+            let mut entries = Vec::new();
+            if let Ok(rd) = fs::read_dir(dir) {
+                let mut items: Vec<_> = rd.filter_map(|e| e.ok()).collect();
+                items.sort_by(|a, b| {
+                    let a_dir = a.path().is_dir();
+                    let b_dir = b.path().is_dir();
+                    match (a_dir, b_dir) {
+                        (true, false) => std::cmp::Ordering::Less,
+                        (false, true) => std::cmp::Ordering::Greater,
+                        _ => a.file_name().to_ascii_lowercase().cmp(&b.file_name().to_ascii_lowercase()),
+                    }
+                });
+                for item in items {
+                    let p = item.path();
+                    let is_dir = p.is_dir();
+                    let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+                    entries.push(FileEntry {
+                        name,
+                        path: p.to_string_lossy().to_string(),
+                        is_directory: is_dir,
+                        children: if is_dir { Some(read_dir_recursive(&p)) } else { None },
+                    });
+                }
+            }
+            entries
+        }
+
+        result.push(FileEntry {
+            name: ".quantcode".to_string(),
+            path: qc_dir.to_string_lossy().to_string(),
+            is_directory: true,
+            children: Some(read_dir_recursive(&qc_dir)),
+        });
+    }
+
     sort_entries(&mut result);
     Ok(result)
 }

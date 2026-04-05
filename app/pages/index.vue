@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { useAppStore, SHELL_OPTIONS } from '../../stores/app'
-import type { ShellType, Theme } from '../../stores/app'
+import type { ShellType, Theme, PanelToggleStyle } from '../../stores/app'
 import { useBrowserStore } from '../../stores/browser'
 import type { SearchEngine } from '../../shared/types'
 import { invoke } from '@tauri-apps/api/core'
+import UiNotesBar from '~/components/UI/NotesBar.vue'
 
 const appStore = useAppStore()
 const browserStore = useBrowserStore()
@@ -14,9 +15,21 @@ const editorVisible = computed(() => appStore.editorVisible)
 
 const DEFAULT_SIDEBAR_WIDTH = 220
 const MIN_SIDEBAR_WIDTH = 120
+const DEFAULT_NOTES_HEIGHT = 200
+const MIN_NOTES_HEIGHT = 80
 
 const leftWidth = ref(DEFAULT_SIDEBAR_WIDTH)
 const rightWidth = ref(DEFAULT_SIDEBAR_WIDTH)
+const notesHeight = ref(DEFAULT_NOTES_HEIGHT)
+
+const statusBarRef = ref<HTMLElement | null>(null)
+const statusBarHeight = ref(24)
+
+onMounted(() => {
+  if (statusBarRef.value) {
+    statusBarHeight.value = statusBarRef.value.offsetHeight
+  }
+})
 
 provide('rightSidebarWidth', rightWidth)
 
@@ -29,9 +42,11 @@ const viewportInsets = computed(() => ({
 provide('viewportInsets', viewportInsets)
 
 // ---- Resize logic ----
-const resizing = ref<'left' | 'right' | null>(null)
+const resizing = ref<'left' | 'right' | 'notes' | null>(null)
 const resizeStartX = ref(0)
+const resizeStartY = ref(0)
 const resizeStartWidth = ref(0)
+const resizeStartHeight = ref(0)
 
 function startResize(side: 'left' | 'right', e: MouseEvent) {
   e.preventDefault()
@@ -44,8 +59,25 @@ function startResize(side: 'left' | 'right', e: MouseEvent) {
   document.body.style.userSelect = 'none'
 }
 
+function startNotesResize(e: MouseEvent) {
+  e.preventDefault()
+  resizing.value = 'notes'
+  resizeStartY.value = e.clientY
+  resizeStartHeight.value = notesHeight.value
+  document.addEventListener('mousemove', onResizeMove)
+  document.addEventListener('mouseup', onResizeEnd)
+  document.body.style.cursor = 'row-resize'
+  document.body.style.userSelect = 'none'
+}
+
 function onResizeMove(e: MouseEvent) {
   if (!resizing.value) return
+  if (resizing.value === 'notes') {
+    const dy = resizeStartY.value - e.clientY
+    const maxHeight = Math.floor(window.innerHeight * 0.5)
+    notesHeight.value = Math.min(maxHeight, Math.max(MIN_NOTES_HEIGHT, resizeStartHeight.value + dy))
+    return
+  }
   const dx = e.clientX - resizeStartX.value
   const delta = resizing.value === 'left' ? dx : -dx
   const maxWidth = Math.floor(window.innerWidth * (resizing.value === 'left' ? 0.25 : 0.50))
@@ -65,12 +97,27 @@ function onResizeEnd() {
   document.body.style.userSelect = ''
 }
 
+const suppressTransition = ref(false)
+
+function suppressBriefly() {
+  suppressTransition.value = true
+  requestAnimationFrame(() => {
+    suppressTransition.value = false
+  })
+}
+
 function resetWidth(side: 'left' | 'right') {
+  suppressBriefly()
   if (side === 'left') {
     leftWidth.value = DEFAULT_SIDEBAR_WIDTH
   } else {
     rightWidth.value = DEFAULT_SIDEBAR_WIDTH
   }
+}
+
+function resetNotesHeight() {
+  suppressBriefly()
+  notesHeight.value = DEFAULT_NOTES_HEIGHT
 }
 
 function onSettingsOverlayClick(e: MouseEvent) {
@@ -198,8 +245,58 @@ async function downloadUpdate() {
       </transition>
     </div>
 
+    <!-- Notes Bar -->
+    <div
+      v-if="appStore.notesBarVisible"
+      class="flex-shrink-0 relative"
+      :style="{ height: notesHeight + 'px', borderTop: '1px solid var(--qc-border)' }"
+    >
+      <!-- Top resize handle -->
+      <div
+        class="resize-handle-h"
+        @mousedown="startNotesResize"
+        @dblclick="resetNotesHeight"
+      />
+      <UiNotesBar class="h-full" />
+    </div>
+
     <!-- Status Bar -->
-    <UiStatusBar />
+    <div ref="statusBarRef" class="relative flex-shrink-0">
+      <UiStatusBar />
+    </div>
+
+    <!-- Panel toggle pills (fixed, floating above content) -->
+    <!-- Left/Right sidebar pills (modern + both only) -->
+    <template v-if="appStore.panelToggleStyle !== 'classic'">
+      <button
+        class="panel-toggle panel-toggle-vertical"
+        :class="{ 'no-pos-transition': resizing || suppressTransition }"
+        :style="{
+          left: fileExplorerVisible ? (leftWidth + 8) + 'px' : '8px',
+        }"
+        :title="fileExplorerVisible ? 'Hide File Explorer (Ctrl+B)' : 'Show File Explorer (Ctrl+B)'"
+        @click="appStore.toggleFileExplorer()"
+      />
+      <button
+        class="panel-toggle panel-toggle-vertical"
+        :class="{ 'no-pos-transition': resizing || suppressTransition }"
+        :style="{
+          right: editorVisible ? (rightWidth + 8) + 'px' : '8px',
+        }"
+        :title="editorVisible ? 'Hide Editor Panel (Ctrl+Shift+B)' : 'Show Editor Panel (Ctrl+Shift+B)'"
+        @click="appStore.toggleEditor()"
+      />
+    </template>
+    <!-- Bottom notes pill (always visible) -->
+    <button
+      class="panel-toggle panel-toggle-horizontal"
+      :class="{ 'no-pos-transition': resizing || suppressTransition }"
+      :style="{
+        bottom: (appStore.notesBarVisible ? notesHeight : 0) + statusBarHeight + 8 + 'px',
+      }"
+      :title="appStore.notesBarVisible ? 'Hide Notes (Ctrl+J)' : 'Show Notes (Ctrl+J)'"
+      @click="appStore.toggleNotesBar()"
+    />
   </div>
 
   <!-- Settings Modal (outside the overflow-hidden container) -->
@@ -393,26 +490,6 @@ async function downloadUpdate() {
               />
             </span>
           </button>
-          <button
-            class="w-full text-left px-3 py-2.5 rounded-lg text-xs flex items-center justify-between transition-all mt-1"
-            :style="{
-              background: 'var(--qc-bg-surface)',
-              color: 'var(--qc-text)',
-              border: '1px solid var(--qc-border)',
-            }"
-            @click="appStore.toggleCanvasHints()"
-          >
-            <span>Show canvas hints</span>
-            <span
-              class="w-8 h-4 rounded-full relative inline-block transition-all"
-              :style="{ background: appStore.canvasHints ? '#a0a0a8' : 'var(--qc-border)' }"
-            >
-              <span
-                class="absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all"
-                :style="{ left: appStore.canvasHints ? '18px' : '2px' }"
-              />
-            </span>
-          </button>
         </div>
 
         <!-- Panels -->
@@ -420,27 +497,71 @@ async function downloadUpdate() {
           <div class="text-[10px] uppercase tracking-wider mb-3 font-medium" :style="{ color: 'var(--qc-text-dim)' }">
             Panels
           </div>
-          <div class="space-y-1">
-            <button
-              class="w-full text-left px-3 py-2.5 rounded-lg text-xs flex items-center justify-between transition-all"
-              :style="{ background: 'var(--qc-bg-surface)', color: 'var(--qc-text)', border: '1px solid var(--qc-border)' }"
-              @click="appStore.toggleFileExplorer()"
+
+          <!-- Toggle Style (top of group) -->
+          <div class="mb-3">
+            <select
+              class="w-full px-3 py-2 rounded-lg text-xs font-medium appearance-none cursor-pointer transition-all"
+              :style="dropdownStyle"
+              :value="appStore.panelToggleStyle"
+              @change="appStore.setPanelToggleStyle(($event.target as HTMLSelectElement).value as PanelToggleStyle)"
             >
-              <span>File Explorer</span>
-              <span class="text-[10px] font-medium" :style="{ color: appStore.fileExplorerVisible ? '#a0a0a8' : 'var(--qc-text-dim)' }">
-                {{ appStore.fileExplorerVisible ? 'ON' : 'OFF' }}
-              </span>
-            </button>
-            <button
-              class="w-full text-left px-3 py-2.5 rounded-lg text-xs flex items-center justify-between transition-all"
-              :style="{ background: 'var(--qc-bg-surface)', color: 'var(--qc-text)', border: '1px solid var(--qc-border)' }"
-              @click="appStore.toggleEditor()"
+              <option value="both">Both</option>
+              <option value="classic">Classic</option>
+              <option value="modern">Modern</option>
+            </select>
+          </div>
+
+          <button
+            class="w-full text-left px-3 py-2.5 rounded-lg text-xs flex items-center justify-between transition-all"
+            :style="{ background: 'var(--qc-bg-surface)', color: 'var(--qc-text)', border: '1px solid var(--qc-border)' }"
+            @click="appStore.toggleFileExplorer()"
+          >
+            <span>File Explorer</span>
+            <span
+              class="w-8 h-4 rounded-full relative inline-block transition-all"
+              :style="{ background: appStore.fileExplorerVisible ? '#a0a0a8' : 'var(--qc-border)' }"
             >
-              <span>Editor Panel</span>
-              <span class="text-[10px] font-medium" :style="{ color: appStore.editorVisible ? '#a0a0a8' : 'var(--qc-text-dim)' }">
-                {{ appStore.editorVisible ? 'ON' : 'OFF' }}
-              </span>
-            </button>
+              <span
+                class="absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all"
+                :style="{ left: appStore.fileExplorerVisible ? '18px' : '2px' }"
+              />
+            </span>
+          </button>
+          <button
+            class="w-full text-left px-3 py-2.5 rounded-lg text-xs flex items-center justify-between transition-all mt-1"
+            :style="{ background: 'var(--qc-bg-surface)', color: 'var(--qc-text)', border: '1px solid var(--qc-border)' }"
+            @click="appStore.toggleEditor()"
+          >
+            <span>Editor Panel</span>
+            <span
+              class="w-8 h-4 rounded-full relative inline-block transition-all"
+              :style="{ background: appStore.editorVisible ? '#a0a0a8' : 'var(--qc-border)' }"
+            >
+              <span
+                class="absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all"
+                :style="{ left: appStore.editorVisible ? '18px' : '2px' }"
+              />
+            </span>
+          </button>
+        </div>
+
+        <!-- Tutorial -->
+        <div>
+          <div class="text-[10px] uppercase tracking-wider mb-3 font-medium" :style="{ color: 'var(--qc-text-dim)' }">
+            Tutorial
+          </div>
+          <div
+            class="px-3 py-2.5 rounded-lg text-[10px] leading-relaxed space-y-1"
+            :style="{ background: 'var(--qc-bg-surface)', color: 'var(--qc-text-muted)', border: '1px solid var(--qc-border)' }"
+          >
+            <div><strong :style="{ color: 'var(--qc-text)' }">Right click</strong> &mdash; new agent</div>
+            <div><strong :style="{ color: 'var(--qc-text)' }">Drag header</strong> &mdash; move window</div>
+            <div><strong :style="{ color: 'var(--qc-text)' }">Scroll</strong> &mdash; pan canvas</div>
+            <div><strong :style="{ color: 'var(--qc-text)' }">Ctrl+Scroll</strong> &mdash; zoom</div>
+            <div><strong :style="{ color: 'var(--qc-text)' }">Ctrl+B</strong> &mdash; file explorer</div>
+            <div><strong :style="{ color: 'var(--qc-text)' }">Ctrl+Shift+B</strong> &mdash; editor panel</div>
+            <div><strong :style="{ color: 'var(--qc-text)' }">Ctrl+J</strong> &mdash; notes bar</div>
           </div>
         </div>
 
@@ -540,4 +661,58 @@ async function downloadUpdate() {
 .resize-handle-left {
   left: 0;
 }
+
+.resize-handle-h {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 5px;
+  cursor: row-resize;
+  z-index: 10;
+  transition: background 0.15s;
+}
+
+.resize-handle-h:hover,
+.resize-handle-h:active {
+  background: var(--qc-text-dim);
+  opacity: 0.4;
+}
+
+/* ---- Panel toggle pills (Collaborator-style) ---- */
+.panel-toggle {
+  position: fixed;
+  background: var(--qc-text-muted);
+  border: none;
+  border-radius: 9999px;
+  cursor: pointer;
+  opacity: 0.3;
+  transition: opacity 0.15s ease-in-out, left 0.25s cubic-bezier(0.4, 0, 0.2, 1), right 0.25s cubic-bezier(0.4, 0, 0.2, 1), bottom 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  z-index: 9000;
+  padding: 0;
+}
+
+.panel-toggle:hover {
+  opacity: 0.8;
+}
+
+.panel-toggle-vertical {
+  width: 6px;
+  height: 40px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.panel-toggle-horizontal {
+  width: 40px;
+  height: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+/* Strip position transitions during active resize so pills track instantly */
+.panel-toggle.no-pos-transition {
+  transition: opacity 0.15s ease-in-out;
+}
+
 </style>
