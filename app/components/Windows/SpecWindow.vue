@@ -5,7 +5,7 @@ import { useWorkspacesStore } from '../../../stores/workspaces'
 import { useAppStore } from '../../../stores/app'
 import { findSpecFiles, updateSpecField, serializeSpec } from '../../../lib/specs/engine'
 
-const props = defineProps<{
+defineProps<{
   window: CanvasWindow
 }>()
 
@@ -20,26 +20,51 @@ const errorMsg = ref('')
 // New spec form
 const newTitle = ref('')
 const newPriority = ref<string>('medium')
+const newVerifyMode = ref<'bypass' | 'verify'>('bypass')
 const creating = ref(false)
 
-// Pointer-based drag and drop state (HTML5 drag API doesn't work in Tauri)
+// Pointer-based drag and drop (HTML5 drag API doesn't work reliably in Tauri)
 const draggedSpec = ref<SpecFile | null>(null)
 const dragOverStatus = ref<SpecStatus | null>(null)
 const isDragging = ref(false)
 const dragGhost = ref<HTMLElement | null>(null)
-const dragStartY = ref(0)
-const dragThreshold = 5 // px before drag activates
+const dragStart = ref({ x: 0, y: 0 })
+const dragThreshold = 5
 const pendingDragSpec = ref<SpecFile | null>(null)
-const groupElements = ref<Map<SpecStatus, HTMLElement>>(new Map())
+const columnElements = ref<Map<SpecStatus, HTMLElement>>(new Map())
 
-const statusOrder: SpecStatus[] = ['planned', 'in-progress', 'done', 'blocked']
-const collapsedGroups = ref<Set<SpecStatus>>(new Set())
+const activeColumns = computed<SpecStatus[]>(() =>
+  newVerifyMode.value === 'verify' ? ['open', 'verify', 'done'] : ['open', 'done'],
+)
 
-const statusConfig: Record<SpecStatus, { label: string; color: string; bg: string; dotColor: string; borderColor: string }> = {
-  planned: { label: 'Planned', color: 'text-blue-400', bg: 'bg-blue-400/10', dotColor: '#3b82f6', borderColor: '#3b82f620' },
-  'in-progress': { label: 'In Progress', color: 'text-amber-400', bg: 'bg-amber-400/10', dotColor: '#f59e0b', borderColor: '#f59e0b20' },
-  done: { label: 'Done', color: 'text-green-400', bg: 'bg-green-400/10', dotColor: '#22c55e', borderColor: '#22c55e20' },
-  blocked: { label: 'Blocked', color: 'text-red-400', bg: 'bg-red-400/10', dotColor: '#ef4444', borderColor: '#ef444420' },
+const statusConfig: Record<SpecStatus, {
+  label: string
+  dotColor: string
+  borderColor: string
+  emptyLabel: string
+  emptyHint: string
+}> = {
+  open: {
+    label: 'Open',
+    dotColor: 'var(--qc-text-dim)',
+    borderColor: 'var(--qc-border)',
+    emptyLabel: 'No open specs',
+    emptyHint: 'Create a spec to start tracking work.',
+  },
+  verify: {
+    label: 'Verify',
+    dotColor: 'var(--qc-text-dim)',
+    borderColor: 'var(--qc-border)',
+    emptyLabel: 'Nothing to verify',
+    emptyHint: 'Specs that need to be verified land here for review.',
+  },
+  done: {
+    label: 'Done',
+    dotColor: 'var(--qc-text-dim)',
+    borderColor: 'var(--qc-border)',
+    emptyLabel: 'Nothing finished yet',
+    emptyHint: 'Drag a spec here or mark it done.',
+  },
 }
 
 const priorityConfig: Record<string, { label: string; color: string; bg: string }> = {
@@ -49,38 +74,46 @@ const priorityConfig: Record<string, { label: string; color: string; bg: string 
   low: { label: 'LOW', color: '#3b82f6', bg: '#3b82f618' },
 }
 
+function getSpecTimestamp(spec: SpecFile): number {
+  const raw = spec.frontmatter.updatedAt || spec.frontmatter.createdAt
+  const timestamp = Date.parse(raw)
+  return Number.isFinite(timestamp) ? timestamp : 0
+}
+
+function sortSpecs(a: SpecFile, b: SpecFile): number {
+  const timeDiff = getSpecTimestamp(b) - getSpecTimestamp(a)
+  if (timeDiff !== 0) return timeDiff
+  return a.frontmatter.title.localeCompare(b.frontmatter.title)
+}
+
 const groupedSpecs = computed(() => {
   const groups: Record<SpecStatus, SpecFile[]> = {
-    planned: [],
-    'in-progress': [],
+    open: [],
+    verify: [],
     done: [],
-    blocked: [],
   }
+
   for (const spec of specs.value) {
-    const status = spec.frontmatter.status
-    if (groups[status]) {
-      groups[status].push(spec)
-    }
+    groups[spec.frontmatter.status].push(spec)
   }
+
+  groups.open.sort(sortSpecs)
+  groups.verify.sort(sortSpecs)
+  groups.done.sort(sortSpecs)
+
   return groups
 })
 
-function toggleGroup(status: SpecStatus) {
-  if (collapsedGroups.value.has(status)) {
-    collapsedGroups.value.delete(status)
-  } else {
-    collapsedGroups.value.add(status)
-  }
-  // Force reactivity
-  collapsedGroups.value = new Set(collapsedGroups.value)
+function toggleExpand(path: string) {
+  expandedSpecPath.value = expandedSpecPath.value === path ? null : path
 }
 
-// Pointer-based drag and drop (works in Tauri unlike HTML5 drag API)
 function onHandleMouseDown(e: MouseEvent, spec: SpecFile) {
   e.preventDefault()
   e.stopPropagation()
+
   pendingDragSpec.value = spec
-  dragStartY.value = e.clientY
+  dragStart.value = { x: e.clientX, y: e.clientY }
 
   window.addEventListener('mousemove', onMouseMove)
   window.addEventListener('mouseup', onMouseUp)
@@ -89,9 +122,14 @@ function onHandleMouseDown(e: MouseEvent, spec: SpecFile) {
 function onMouseMove(e: MouseEvent) {
   if (!pendingDragSpec.value && !isDragging.value) return
 
-  // Activate drag after threshold
   if (pendingDragSpec.value && !isDragging.value) {
-    if (Math.abs(e.clientY - dragStartY.value) < dragThreshold) return
+    const distance = Math.hypot(
+      e.clientX - dragStart.value.x,
+      e.clientY - dragStart.value.y,
+    )
+
+    if (distance < dragThreshold) return
+
     isDragging.value = true
     draggedSpec.value = pendingDragSpec.value
     pendingDragSpec.value = null
@@ -100,38 +138,34 @@ function onMouseMove(e: MouseEvent) {
 
   if (!isDragging.value || !dragGhost.value) return
 
-  // Move ghost
   dragGhost.value.style.top = `${e.clientY - 14}px`
-  dragGhost.value.style.left = `${e.clientX - 40}px`
+  dragGhost.value.style.left = `${e.clientX - 50}px`
 
-  // Hit-test which group we're over
   let foundStatus: SpecStatus | null = null
-  for (const [status, el] of groupElements.value) {
+  for (const [status, el] of columnElements.value) {
     const rect = el.getBoundingClientRect()
-    if (e.clientY >= rect.top && e.clientY <= rect.bottom) {
+    const insideX = e.clientX >= rect.left && e.clientX <= rect.right
+    const insideY = e.clientY >= rect.top && e.clientY <= rect.bottom
+    if (insideX && insideY) {
       foundStatus = status
       break
     }
   }
+
   dragOverStatus.value = foundStatus
 }
 
-async function onMouseUp(e: MouseEvent) {
+async function onMouseUp() {
   window.removeEventListener('mousemove', onMouseMove)
   window.removeEventListener('mouseup', onMouseUp)
 
   if (isDragging.value && draggedSpec.value && dragOverStatus.value) {
     const targetStatus = dragOverStatus.value
     if (draggedSpec.value.frontmatter.status !== targetStatus) {
-      // Uncollapse the target group
-      collapsedGroups.value.delete(targetStatus)
-      collapsedGroups.value = new Set(collapsedGroups.value)
-
       await changeStatus(draggedSpec.value, targetStatus)
     }
   }
 
-  // Cleanup
   removeGhost()
   isDragging.value = false
   draggedSpec.value = null
@@ -141,26 +175,30 @@ async function onMouseUp(e: MouseEvent) {
 
 function createGhost(e: MouseEvent) {
   const ghost = document.createElement('div')
+  const accent = draggedSpec.value
+    ? statusConfig[draggedSpec.value.frontmatter.status].dotColor
+    : 'var(--qc-accent, #6e8efb)'
+
   ghost.className = 'spec-drag-ghost'
   ghost.textContent = draggedSpec.value?.frontmatter.title ?? ''
   ghost.style.cssText = `
     position: fixed;
     top: ${e.clientY - 14}px;
-    left: ${e.clientX - 40}px;
+    left: ${e.clientX - 50}px;
     z-index: 99999;
-    padding: 4px 10px;
-    border-radius: 6px;
+    padding: 5px 10px;
+    border-radius: 8px;
     font-size: 11px;
-    font-weight: 500;
+    font-weight: 600;
     color: #fff;
-    background: var(--qc-accent, #6e8efb);
-    box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    background: ${accent};
+    box-shadow: 0 10px 30px rgba(0,0,0,0.35);
     pointer-events: none;
     white-space: nowrap;
-    max-width: 200px;
+    max-width: 220px;
     overflow: hidden;
     text-overflow: ellipsis;
-    opacity: 0.95;
+    opacity: 0.96;
   `
   document.body.appendChild(ghost)
   dragGhost.value = ghost
@@ -173,15 +211,18 @@ function removeGhost() {
   }
 }
 
-function registerGroupEl(status: SpecStatus, el: HTMLElement | null) {
+function registerColumnEl(status: SpecStatus, el: HTMLElement | null) {
   if (el) {
-    groupElements.value.set(status, el)
+    columnElements.value.set(status, el)
+  } else {
+    columnElements.value.delete(status)
   }
 }
 
 async function loadSpecs() {
   loading.value = true
   errorMsg.value = ''
+
   try {
     const workspace = workspacesStore.activeWorkspace
     if (!workspace) {
@@ -229,8 +270,9 @@ async function createSpec() {
       path: relativePath,
       frontmatter: {
         title,
-        status: 'planned',
+        status: 'open',
         priority: newPriority.value as SpecFile['frontmatter']['priority'],
+        verifyMode: newVerifyMode.value === 'verify' ? true : undefined,
         linkedFiles: [relativePath],
         createdAt: now,
         updatedAt: now,
@@ -240,7 +282,6 @@ async function createSpec() {
     }
     spec.rawContent = serializeSpec(spec)
 
-    // Check if file already exists
     let exists = false
     try {
       await invoke<string>('read_file', { path: fullPath })
@@ -268,10 +309,11 @@ function refreshExplorer() {
     if (typeof appStore.triggerFileExplorerRefresh === 'function') {
       appStore.triggerFileExplorerRefresh()
     } else {
-      // Fallback: directly increment the ref
       appStore.fileExplorerRefreshKey++
     }
-  } catch { /* HMR */ }
+  } catch {
+    // HMR
+  }
 }
 
 async function writeSpec(spec: SpecFile, fullPath: string) {
@@ -279,14 +321,11 @@ async function writeSpec(spec: SpecFile, fullPath: string) {
 
   newTitle.value = ''
   newPriority.value = 'medium'
+  newVerifyMode.value = 'bypass'
 
-  // Refresh dashboard
   await loadSpecs()
-
-  // Refresh file explorer (preserves expanded folders)
   refreshExplorer()
 
-  // Refresh any open spec tabs in the editor
   try {
     for (const tab of appStore.activeEditorTabs) {
       if (!tab.filePath.endsWith('.spec.md')) continue
@@ -294,7 +333,7 @@ async function writeSpec(spec: SpecFile, fullPath: string) {
         appStore.notifyFileSaved(tab.filePath, spec.rawContent)
         continue
       }
-      // Other spec tabs: re-read from disk
+
       try {
         const workspace = workspacesStore.activeWorkspace
         if (!workspace) continue
@@ -304,9 +343,13 @@ async function writeSpec(spec: SpecFile, fullPath: string) {
             : workspace.folderPath + '/' + tab.filePath,
         })
         appStore.refreshTab(tab.filePath, content)
-      } catch { /* Tab file may have been deleted */ }
+      } catch {
+        // Tab file may have been deleted
+      }
     }
-  } catch { /* HMR */ }
+  } catch {
+    // HMR
+  }
 }
 
 async function handleOverwrite(overwrite: boolean) {
@@ -342,17 +385,17 @@ async function openInEditor(spec: SpecFile) {
   }
 }
 
-function toggleExpand(path: string) {
-  expandedSpecPath.value = expandedSpecPath.value === path ? null : path
-}
+async function changeStatus(spec: SpecFile, newStatus: SpecStatus) {
+  if (spec.frontmatter.status === newStatus) return
 
-async function changeStatus(spec: SpecFile, newSt: SpecStatus) {
   const workspace = workspacesStore.activeWorkspace
-  spec.frontmatter.status = newSt
-  spec.frontmatter.updatedAt = new Date().toISOString()
+  const updatedAt = new Date().toISOString()
 
-  let updated = updateSpecField(spec.rawContent, 'status', newSt)
-  updated = updateSpecField(updated, 'updatedAt', spec.frontmatter.updatedAt)
+  spec.frontmatter.status = newStatus
+  spec.frontmatter.updatedAt = updatedAt
+
+  let updated = updateSpecField(spec.rawContent, 'status', newStatus)
+  updated = updateSpecField(updated, 'updatedAt', updatedAt)
   spec.rawContent = updated
 
   if (workspace) {
@@ -366,7 +409,6 @@ async function changeStatus(spec: SpecFile, newSt: SpecStatus) {
     }
   }
 
-  // Reload so grouped view updates
   await loadSpecs()
 }
 
@@ -393,20 +435,22 @@ async function handleDelete(confirmed: boolean) {
     await invoke('delete_file', { path: fullPath })
     if (expandedSpecPath.value === spec.path) expandedSpecPath.value = null
 
-    // Close from sidebar editor + canvas windows
     appStore.notifyFileDeleted(fullPath)
-
-    // Refresh dashboard
     await loadSpecs()
-
-    // Refresh file explorer
     refreshExplorer()
   } catch (err) {
     errorMsg.value = err instanceof Error ? err.message : String(err)
   }
 }
 
-// Refresh spec list when a file is deleted from the explorer
+watch(newVerifyMode, async (mode) => {
+  if (mode !== 'bypass') return
+  const verifySpecs = specs.value.filter(s => s.frontmatter.status === 'verify')
+  for (const spec of verifySpecs) {
+    await changeStatus(spec, 'open')
+  }
+})
+
 watch(() => appStore.lastDeletedFile, (deleted) => {
   if (deleted?.filePath.endsWith('.spec.md')) {
     loadSpecs()
@@ -426,9 +470,16 @@ onUnmounted(() => {
 
 <template>
   <div class="spec-dashboard flex flex-col h-full">
-    <!-- Create new spec form -->
     <div class="px-3 py-2.5 flex-shrink-0 spec-create-form">
       <div class="flex items-center gap-1.5">
+        <select
+          v-model="newVerifyMode"
+          class="spec-select text-[10px] rounded-md px-1.5 py-1.5 outline-none flex-shrink-0"
+          :class="{ 'verify-active': newVerifyMode === 'verify' }"
+        >
+          <option value="bypass">Bypass</option>
+          <option value="verify">Verify</option>
+        </select>
         <input
           v-model="newTitle"
           type="text"
@@ -464,7 +515,6 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Overwrite confirmation -->
     <div
       v-if="confirmOverwrite"
       class="px-3 py-2 flex items-center gap-2 flex-shrink-0 text-[10px] spec-overwrite-bar"
@@ -484,7 +534,6 @@ onUnmounted(() => {
       </button>
     </div>
 
-    <!-- Delete confirmation modal -->
     <Teleport to="body">
       <div
         v-if="confirmDeleteVisible"
@@ -517,12 +566,10 @@ onUnmounted(() => {
       </div>
     </Teleport>
 
-    <!-- Loading state -->
     <div v-if="loading" class="flex-1 flex items-center justify-center text-xs" :style="{ color: 'var(--qc-text-dim)' }">
       <span class="animate-pulse">Loading specs...</span>
     </div>
 
-    <!-- Error state -->
     <div
       v-else-if="errorMsg"
       class="flex-1 flex items-center justify-center text-xs px-4 text-center"
@@ -531,174 +578,183 @@ onUnmounted(() => {
       {{ errorMsg }}
     </div>
 
-    <!-- Specs content with drag-and-drop groups -->
-    <div v-else class="flex-1 min-h-0 overflow-y-auto px-2 py-2 space-y-2">
-      <div
-        v-for="status in statusOrder"
-        :key="status"
-        :ref="(el: any) => registerGroupEl(status, el as HTMLElement)"
-        class="spec-group"
-        :class="{ 'drag-over': dragOverStatus === status && draggedSpec?.frontmatter.status !== status }"
-      >
-        <!-- Group header -->
-        <button
-          class="spec-group-header w-full flex items-center gap-2 px-2 py-1.5 rounded-md transition-all"
-          :style="{ '--group-color': statusConfig[status].dotColor }"
-          @click="toggleGroup(status)"
+    <div v-else class="flex-1 min-h-0 overflow-hidden">
+      <div class="spec-board h-full flex overflow-x-auto">
+        <section
+          v-for="status in activeColumns"
+          :key="status"
+          :ref="(el: any) => registerColumnEl(status, el as HTMLElement)"
+          class="spec-column flex-1 min-w-[240px] min-h-0"
+          :class="{ 'drag-over': dragOverStatus === status && draggedSpec?.frontmatter.status !== status }"
+          :style="{
+            '--column-accent': statusConfig[status].dotColor,
+            '--column-border': statusConfig[status].borderColor,
+          }"
         >
-          <span
-            class="w-2 h-2 rounded-full flex-shrink-0 transition-all"
-            :style="{ backgroundColor: statusConfig[status].dotColor, boxShadow: `0 0 6px ${statusConfig[status].dotColor}50` }"
-          />
-          <span
-            class="text-[10px] font-bold uppercase tracking-wider flex-1 text-left"
-            :class="statusConfig[status].color"
-          >
-            {{ statusConfig[status].label }}
-          </span>
-          <span class="spec-count text-[10px]">{{ groupedSpecs[status].length }}</span>
-          <span
-            class="text-[9px] transition-transform duration-200"
-            :style="{ color: 'var(--qc-text-dim)', transform: collapsedGroups.has(status) ? 'rotate(-90deg)' : 'rotate(0deg)' }"
-          >
-            &#9662;
-          </span>
-        </button>
-
-        <!-- Drop zone indicator -->
-        <div
-          v-if="isDragging && draggedSpec && draggedSpec.frontmatter.status !== status && dragOverStatus === status"
-          class="spec-drop-indicator mx-1 my-1"
-        >
-          <span class="text-[9px]">Drop to move to {{ statusConfig[status].label }}</span>
-        </div>
-
-        <!-- Spec cards with transition -->
-        <div
-          v-show="!collapsedGroups.has(status)"
-          class="spec-cards-container space-y-1 mt-1"
-        >
-          <div
-            v-for="(spec, idx) in groupedSpecs[status]"
-            :key="spec.path"
-            class="spec-card rounded-md overflow-hidden transition-all duration-200"
-            :class="{
-              'expanded': expandedSpecPath === spec.path,
-              'dragging': draggedSpec?.path === spec.path,
-            }"
-            :style="{ '--card-accent': statusConfig[spec.frontmatter.status].dotColor }"
-          >
-            <!-- Card header -->
-            <div
-              class="spec-card-header flex items-center gap-2 px-2.5 py-2 cursor-pointer"
-              @click="toggleExpand(spec.path)"
-            >
-              <!-- Drag handle (pointer-based) -->
+          <div class="spec-column-header">
+            <div class="flex items-start gap-2 min-w-0">
               <span
-                class="spec-drag-handle text-[8px] cursor-grab active:cursor-grabbing flex-shrink-0"
-                title="Drag to change status"
-                @mousedown="onHandleMouseDown($event, spec)"
-              >&#9776;</span>
-
-              <span class="text-xs flex-1 truncate font-medium" :style="{ color: 'var(--qc-text)' }">
-                {{ spec.frontmatter.title }}
-              </span>
-
-              <!-- Priority badge -->
-              <span
-                v-if="spec.frontmatter.priority && priorityConfig[spec.frontmatter.priority]"
-                class="spec-priority-badge text-[8px] px-1.5 py-0.5 rounded-sm font-bold tracking-wider"
-                :style="{
-                  color: priorityConfig[spec.frontmatter.priority].color,
-                  backgroundColor: priorityConfig[spec.frontmatter.priority].bg,
-                }"
-              >
-                {{ priorityConfig[spec.frontmatter.priority].label }}
-              </span>
-
-              <!-- Agent -->
-              <span
-                v-if="spec.frontmatter.assignedTo"
-                class="text-[9px] text-[#22d3ee]"
-              >
-                {{ spec.frontmatter.assignedTo }}
-              </span>
-
-              <!-- Files count -->
-              <span
-                v-if="spec.frontmatter.linkedFiles?.length"
-                class="spec-files-count text-[9px] flex items-center gap-0.5"
-              >
-                <span style="font-size: 7px">&#128196;</span>
-                {{ spec.frontmatter.linkedFiles.length }}
-              </span>
-
-              <span
-                class="text-[9px] transition-transform duration-200"
-                :style="{ color: 'var(--qc-text-dim)', transform: expandedSpecPath === spec.path ? 'rotate(180deg)' : 'rotate(0deg)' }"
-              >
-                &#9662;
-              </span>
+                class="w-2.5 h-2.5 rounded-full flex-shrink-0 mt-1"
+                :style="{ backgroundColor: statusConfig[status].dotColor }"
+              />
+              <div class="min-w-0">
+                <div class="text-[11px] font-bold uppercase tracking-[0.14em]" :style="{ color: 'var(--qc-text-muted)' }">
+                  {{ statusConfig[status].label }}
+                </div>
+              </div>
             </div>
 
-            <!-- Expanded content -->
-            <div
-              v-if="expandedSpecPath === spec.path"
-              class="spec-card-body px-2.5 py-2.5 space-y-2.5"
-            >
-              <p class="text-[11px] leading-relaxed whitespace-pre-wrap" :style="{ color: 'var(--qc-text-muted)' }">{{ spec.content }}</p>
+            <span class="spec-count text-[10px]">{{ groupedSpecs[status].length }}</span>
+          </div>
 
-              <!-- Linked files -->
-              <div v-if="spec.frontmatter.linkedFiles?.length" class="space-y-1">
-                <div class="text-[9px] uppercase tracking-wider font-medium" :style="{ color: 'var(--qc-text-dim)' }">Linked files</div>
+          <div
+            v-if="isDragging && draggedSpec && draggedSpec.frontmatter.status !== status && dragOverStatus === status"
+            class="spec-drop-indicator mx-3 mt-3"
+          >
+            <span class="text-[9px]">Drop to move to {{ statusConfig[status].label }}</span>
+          </div>
+
+          <div class="spec-column-body flex-1 min-h-0 overflow-y-auto">
+            <div class="space-y-2">
+              <div
+                v-for="spec in groupedSpecs[status]"
+                :key="spec.path"
+                class="spec-card rounded-lg overflow-hidden transition-all duration-200"
+                :class="{
+                  expanded: expandedSpecPath === spec.path,
+                  dragging: draggedSpec?.path === spec.path,
+                }"
+                :style="{ '--card-accent': statusConfig[spec.frontmatter.status].dotColor }"
+              >
                 <div
-                  v-for="f in spec.frontmatter.linkedFiles"
-                  :key="f"
-                  class="text-[10px] text-[#22d3ee] font-mono pl-2 py-0.5 rounded spec-linked-file"
+                  class="spec-card-header flex items-center gap-2 px-2.5 py-2 cursor-pointer"
+                  @click="toggleExpand(spec.path)"
                 >
-                  {{ f }}
+                  <span
+                    class="spec-drag-handle text-[8px] cursor-grab active:cursor-grabbing flex-shrink-0"
+                    title="Drag between Open and Done"
+                    @mousedown="onHandleMouseDown($event, spec)"
+                  >&#9776;</span>
+
+                  <span class="text-xs flex-1 truncate font-medium" :style="{ color: 'var(--qc-text)' }">
+                    {{ spec.frontmatter.title }}
+                  </span>
+
+                  <span
+                    v-if="spec.frontmatter.priority && priorityConfig[spec.frontmatter.priority]"
+                    class="spec-priority-badge text-[8px] px-1.5 py-0.5 rounded-sm font-bold tracking-wider"
+                    :style="{
+                      color: priorityConfig[spec.frontmatter.priority].color,
+                      backgroundColor: priorityConfig[spec.frontmatter.priority].bg,
+                    }"
+                  >
+                    {{ priorityConfig[spec.frontmatter.priority].label }}
+                  </span>
+
+                  <span
+                    v-if="spec.frontmatter.verifyMode"
+                    class="spec-verify-badge text-[8px] px-1.5 py-0.5 rounded-sm font-bold tracking-wider"
+                  >
+                    VFY
+                  </span>
+
+                  <span
+                    v-if="spec.frontmatter.assignedTo"
+                    class="text-[9px] text-[#22d3ee]"
+                  >
+                    {{ spec.frontmatter.assignedTo }}
+                  </span>
+
+                  <span
+                    v-if="spec.frontmatter.linkedFiles?.length"
+                    class="spec-files-count text-[9px] flex items-center gap-0.5"
+                  >
+                    <span style="font-size: 7px">&#128196;</span>
+                    {{ spec.frontmatter.linkedFiles.length }}
+                  </span>
+
+                  <span
+                    class="text-[9px] transition-transform duration-200"
+                    :style="{ color: 'var(--qc-text-dim)', transform: expandedSpecPath === spec.path ? 'rotate(180deg)' : 'rotate(0deg)' }"
+                  >
+                    &#9662;
+                  </span>
+                </div>
+
+                <div
+                  v-if="expandedSpecPath === spec.path"
+                  class="spec-card-body px-2.5 py-2.5 space-y-2.5"
+                >
+                  <p class="text-[11px] leading-relaxed whitespace-pre-wrap" :style="{ color: 'var(--qc-text-muted)' }">{{ spec.content }}</p>
+
+                  <div v-if="spec.frontmatter.linkedFiles?.length" class="space-y-1">
+                    <div class="text-[9px] uppercase tracking-wider font-medium" :style="{ color: 'var(--qc-text-dim)' }">Linked files</div>
+                    <div
+                      v-for="f in spec.frontmatter.linkedFiles"
+                      :key="f"
+                      class="text-[10px] text-[#22d3ee] font-mono pl-2 py-0.5 rounded spec-linked-file"
+                    >
+                      {{ f }}
+                    </div>
+                  </div>
+
+                  <div class="flex items-center gap-2 pt-1 spec-actions">
+                    <div
+                      class="spec-status-toggle"
+                      :style="{ '--toggle-accent': statusConfig[spec.frontmatter.status].dotColor }"
+                    >
+                      <button
+                        class="spec-status-toggle-btn"
+                        :class="{ active: spec.frontmatter.status === 'open' }"
+                        @click.stop="changeStatus(spec, 'open')"
+                      >
+                        Open
+                      </button>
+                      <button
+                        v-if="newVerifyMode === 'verify'"
+                        class="spec-status-toggle-btn"
+                        :class="{ active: spec.frontmatter.status === 'verify' }"
+                        @click.stop="changeStatus(spec, 'verify')"
+                      >
+                        Verify
+                      </button>
+                      <button
+                        class="spec-status-toggle-btn"
+                        :class="{ active: spec.frontmatter.status === 'done' }"
+                        @click.stop="changeStatus(spec, 'done')"
+                      >
+                        Done
+                      </button>
+                    </div>
+
+                    <div class="flex-1" />
+
+                    <button
+                      class="spec-action-btn text-[10px] px-2 py-1 rounded-md transition-all"
+                      @click.stop="openInEditor(spec)"
+                    >
+                      Edit
+                    </button>
+                    <button
+                      class="spec-action-btn spec-delete-btn text-[10px] px-1.5 py-1 rounded-md transition-all"
+                      @click.stop="requestDeleteSpec(spec)"
+                    >
+                      &#10005;
+                    </button>
+                  </div>
                 </div>
               </div>
 
-              <!-- Actions row -->
-              <div class="flex items-center gap-2 pt-1 spec-actions">
-                <select
-                  :value="spec.frontmatter.status"
-                  class="spec-select text-[10px] rounded-md px-1.5 py-1 outline-none"
-                  @change="changeStatus(spec, ($event.target as HTMLSelectElement).value as SpecStatus)"
-                >
-                  <option value="planned">Planned</option>
-                  <option value="in-progress">In Progress</option>
-                  <option value="done">Done</option>
-                  <option value="blocked">Blocked</option>
-                </select>
-
-                <div class="flex-1" />
-
-                <button
-                  class="spec-action-btn text-[10px] px-2 py-1 rounded-md transition-all"
-                  @click.stop="openInEditor(spec)"
-                >
-                  Edit
-                </button>
-                <button
-                  class="spec-action-btn spec-delete-btn text-[10px] px-1.5 py-1 rounded-md transition-all"
-                  @click.stop="requestDeleteSpec(spec)"
-                >
-                  &#10005;
-                </button>
+              <div
+                v-if="groupedSpecs[status].length === 0 && !(draggedSpec && dragOverStatus === status)"
+                class="spec-empty-state"
+              >
+                <div class="text-[11px] font-medium">{{ statusConfig[status].emptyLabel }}</div>
+                <div class="text-[10px] mt-1">{{ statusConfig[status].emptyHint }}</div>
               </div>
             </div>
           </div>
-
-          <!-- Empty group hint -->
-          <div
-            v-if="groupedSpecs[status].length === 0 && !(draggedSpec && dragOverStatus === status)"
-            class="text-[10px] px-3 py-2 italic spec-empty-hint"
-          >
-            No specs
-          </div>
-        </div>
+        </section>
       </div>
     </div>
   </div>
@@ -707,18 +763,6 @@ onUnmounted(() => {
 <style scoped>
 .spec-dashboard {
   background: var(--qc-bg-window);
-}
-
-.spec-header {
-  border-bottom: 1px solid var(--qc-border);
-  background: var(--qc-bg-header);
-}
-
-.spec-count-badge {
-  color: var(--qc-text-muted);
-  background: var(--qc-bg-surface);
-  padding: 1px 6px;
-  border-radius: 8px;
 }
 
 .spec-refresh-btn {
@@ -758,6 +802,10 @@ onUnmounted(() => {
 .spec-select:focus {
   border-color: var(--qc-accent);
 }
+.spec-select.verify-active {
+  border-color: var(--qc-border-subtle, var(--qc-border));
+  color: var(--qc-text);
+}
 
 .spec-create-btn {
   color: var(--qc-text-dim);
@@ -795,51 +843,69 @@ onUnmounted(() => {
   border: 1px solid var(--qc-border);
 }
 
-/* Group styles */
-.spec-group {
-  border-radius: 6px;
-  transition: all 0.2s ease;
-  padding: 2px;
-}
-.spec-group.drag-over {
-  background: var(--qc-bg-surface);
-  outline: 1px dashed var(--qc-accent);
-  outline-offset: -1px;
+.spec-board {
+  align-items: stretch;
+  min-height: 0;
+  gap: 0;
 }
 
-.spec-group-header {
+.spec-column {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   background: transparent;
-  border: none;
+  transition: background 0.2s ease;
 }
-.spec-group-header:hover {
-  background: var(--qc-bg-surface);
+
+.spec-column + .spec-column {
+  border-left: 1px solid var(--qc-border);
+}
+
+.spec-column.drag-over {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.spec-column-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--qc-border);
+  background: transparent;
+}
+
+.spec-column-body {
+  min-height: 0;
+  padding: 12px;
 }
 
 .spec-count {
   color: var(--qc-text-dim);
   background: var(--qc-bg-surface);
-  padding: 0 5px;
-  border-radius: 6px;
-  min-width: 18px;
+  padding: 0 7px;
+  border-radius: 999px;
+  min-width: 22px;
+  line-height: 18px;
   text-align: center;
+  border: 1px solid var(--qc-border);
 }
 
-/* Drop indicator */
 .spec-drop-indicator {
-  border: 1px dashed var(--qc-accent);
-  border-radius: 6px;
+  border: 1px dashed var(--qc-border-subtle);
+  border-radius: 8px;
   padding: 8px;
   text-align: center;
-  color: var(--qc-accent);
-  background: rgba(110, 142, 251, 0.05);
+  color: var(--qc-text-dim);
+  background: var(--qc-bg-surface);
   animation: pulse-border 1.5s ease infinite;
 }
+
 @keyframes pulse-border {
   0%, 100% { opacity: 0.6; }
   50% { opacity: 1; }
 }
 
-/* Card styles */
 .spec-card {
   background: var(--qc-bg);
   border: 1px solid var(--qc-border);
@@ -848,7 +914,7 @@ onUnmounted(() => {
 }
 .spec-card:hover {
   border-color: var(--qc-border-subtle);
-  background: color-mix(in srgb, var(--qc-bg) 95%, var(--card-accent) 5%);
+  background: var(--qc-bg-header);
 }
 .spec-card.expanded {
   border-color: var(--qc-border-subtle);
@@ -857,7 +923,6 @@ onUnmounted(() => {
   opacity: 0.4;
   transform: scale(0.98);
 }
-
 .spec-card-header:hover {
   background: rgba(255, 255, 255, 0.02);
 }
@@ -877,6 +942,12 @@ onUnmounted(() => {
 }
 
 .spec-priority-badge {
+  letter-spacing: 0.05em;
+}
+
+.spec-verify-badge {
+  color: var(--qc-text-dim);
+  background: var(--qc-bg-surface);
   letter-spacing: 0.05em;
 }
 
@@ -901,6 +972,36 @@ onUnmounted(() => {
   padding-top: 8px;
 }
 
+.spec-status-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 9px;
+  border: 1px solid var(--qc-border);
+  background: var(--qc-bg);
+}
+
+.spec-status-toggle-btn {
+  border: none;
+  background: transparent;
+  color: var(--qc-text-dim);
+  font-size: 10px;
+  line-height: 1;
+  padding: 5px 8px;
+  border-radius: 7px;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.spec-status-toggle-btn:hover {
+  color: var(--qc-text);
+}
+
+.spec-status-toggle-btn.active {
+  color: #fff;
+  background: var(--toggle-accent, var(--qc-accent));
+}
+
 .spec-action-btn {
   color: var(--qc-text-dim);
   background: var(--qc-bg-surface);
@@ -917,14 +1018,19 @@ onUnmounted(() => {
   background: #ef444410;
 }
 
-.spec-empty-hint {
+.spec-empty-state {
+  margin: 4px;
+  padding: 20px 14px;
+  border-radius: 12px;
+  border: 1px dashed var(--qc-border);
   color: var(--qc-text-dim);
-  opacity: 0.5;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.015);
 }
 
-/* Smooth scrollbar */
 .spec-dashboard ::-webkit-scrollbar {
   width: 4px;
+  height: 4px;
 }
 .spec-dashboard ::-webkit-scrollbar-track {
   background: transparent;

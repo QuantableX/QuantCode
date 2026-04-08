@@ -15,6 +15,13 @@ export interface WorkspacesConfig {
   activeWorkspaceId: string | null
 }
 
+// ============= Navigation History =============
+
+export interface NavHistoryEntry {
+  workspaceId: string | null
+  tabId: string | null
+}
+
 // ============= Canvas Types =============
 
 export interface CanvasTransform {
@@ -172,13 +179,14 @@ export interface MCPToolCallResponse {
 
 // ============= Spec Types =============
 
-export type SpecStatus = 'planned' | 'in-progress' | 'done' | 'blocked'
+export type SpecStatus = 'open' | 'verify' | 'done'
 
 export interface SpecFrontmatter {
   title: string
   status: SpecStatus
   priority?: 'low' | 'medium' | 'high' | 'critical'
   assignedTo?: string
+  verifyMode?: boolean
   linkedFiles?: string[]
   tags?: string[]
   createdAt: string

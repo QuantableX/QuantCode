@@ -12,10 +12,9 @@ export function useSpecs() {
 
   const specsByStatus = computed<Record<SpecStatus, SpecFile[]>>(() => {
     const grouped: Record<SpecStatus, SpecFile[]> = {
-      'planned': [],
-      'in-progress': [],
-      'done': [],
-      'blocked': [],
+      open: [],
+      verify: [],
+      done: [],
     }
 
     for (const spec of specs.value) {
@@ -33,10 +32,8 @@ export function useSpecs() {
   const progressSummary = computed(() => {
     const byStatus = specsByStatus.value
     return {
-      planned: byStatus.planned.length,
-      inProgress: byStatus['in-progress'].length,
+      open: byStatus.open.length,
       done: byStatus.done.length,
-      blocked: byStatus.blocked.length,
       total: totalSpecs.value,
       completionPercent: totalSpecs.value > 0
         ? Math.round((byStatus.done.length / totalSpecs.value) * 100)

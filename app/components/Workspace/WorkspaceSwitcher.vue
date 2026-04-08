@@ -3,165 +3,163 @@ import { useWorkspacesStore } from '../../../stores/workspaces'
 import { useCanvasStore } from '../../../stores/canvas'
 import { useAppStore } from '../../../stores/app'
 import { v4 as uuidv4 } from 'uuid'
-import type { WorkspaceInfo } from '../../../shared/types'
+import type { WorkspaceInfo, FileNode } from '../../../shared/types'
 import { onClickOutside } from '@vueuse/core'
+import { invoke } from '@tauri-apps/api/core'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import logoUrl from '~/assets/quantcode-logo.png'
 
 const workspacesStore = useWorkspacesStore()
 const canvasStore = useCanvasStore()
 const appStore = useAppStore()
 
-const dropdownOpenId = ref<string | null>(null)
-const dropdownRef = ref<HTMLElement | null>(null)
-const renamingId = ref<string | null>(null)
-const renameValue = ref('')
+// ── File quick-open search ──
+const searchQuery = ref('')
+const searchOpen = ref(false)
+const searchInputRef = ref<HTMLInputElement | null>(null)
+const searchContainerRef = ref<HTMLElement | null>(null)
+const allFiles = ref<{ name: string; path: string; relativePath: string }[]>([])
+const selectedIndex = ref(0)
 
-// Uniform tab width based on longest workspace name
-const maxTabWidth = computed(() => {
-  const names = workspacesStore.workspaces.map(w => w.name)
-  if (!names.length) return 0
-  const longest = names.reduce((a, b) => a.length > b.length ? a : b, '')
-  // Approximate: ~7.2px per char at 12px/500 weight + 28px padding
-  return Math.ceil(longest.length * 7.2) + 28
+onClickOutside(searchContainerRef, () => {
+  closeSearch()
 })
 
-// ── Drag-and-drop reorder (pointer events) ──
-const dragTabId = ref<string | null>(null)
-const dropBeforeTabId = ref<string | null>(null)
-const dropAtEnd = ref(false)
-let tabDragMoveHandler: ((e: PointerEvent) => void) | null = null
-let tabDragUpHandler: ((e: PointerEvent) => void) | null = null
-let tabDragStartX = 0
-let tabDragStartY = 0
-let tabDragDidMove = false
-
-function findDropTabAtPoint(x: number, draggingId: string): { beforeId: string | null } {
-  const items = document.querySelectorAll('[data-tab-drag-id]')
-  for (const el of items) {
-    const id = (el as HTMLElement).dataset.tabDragId!
-    if (id === draggingId) continue
-    const rect = el.getBoundingClientRect()
-    const mid = rect.left + rect.width / 2
-    if (x < mid) return { beforeId: id }
-  }
-  return { beforeId: null }
-}
-
-function onTabPointerDown(e: PointerEvent, tabId: string) {
-  if (e.button !== 0) return
-  const target = e.target as HTMLElement
-  if (target.closest('.tab-close, input')) return
-
-  e.preventDefault()
-  tabDragStartX = e.clientX
-  tabDragStartY = e.clientY
-  tabDragDidMove = false
-
-  tabDragMoveHandler = (me: PointerEvent) => {
-    const dx = me.clientX - tabDragStartX
-    const dy = me.clientY - tabDragStartY
-    if (!tabDragDidMove && Math.abs(dx) + Math.abs(dy) < 4) return
-    tabDragDidMove = true
-    dragTabId.value = tabId
-    document.body.classList.add('tab-dragging')
-
-    const target = findDropTabAtPoint(me.clientX, tabId)
-    dropBeforeTabId.value = target.beforeId
-    dropAtEnd.value = target.beforeId === null
-  }
-
-  tabDragUpHandler = () => {
-    document.removeEventListener('pointermove', tabDragMoveHandler!, true)
-    document.removeEventListener('pointerup', tabDragUpHandler!, true)
-    document.body.classList.remove('tab-dragging')
-
-    if (tabDragDidMove && dragTabId.value) {
-      const ids = workspacesStore.workspaces.map(w => w.id)
-      const fromIdx = ids.indexOf(dragTabId.value)
-      if (fromIdx >= 0) {
-        ids.splice(fromIdx, 1)
-        if (dropBeforeTabId.value) {
-          const toIdx = ids.indexOf(dropBeforeTabId.value)
-          ids.splice(toIdx, 0, dragTabId.value)
-        } else {
-          ids.push(dragTabId.value)
-        }
-        const newIdx = ids.indexOf(dragTabId.value)
-        workspacesStore.reorderWorkspace(fromIdx, newIdx)
-      }
+function flattenTree(nodes: FileNode[], basePath: string): { name: string; path: string; relativePath: string }[] {
+  const result: { name: string; path: string; relativePath: string }[] = []
+  for (const node of nodes) {
+    if (!node.isDirectory) {
+      const rel = node.path.replace(/\\/g, '/').replace(basePath.replace(/\\/g, '/') + '/', '')
+      result.push({ name: node.name, path: node.path, relativePath: rel })
     }
-
-    dragTabId.value = null
-    dropBeforeTabId.value = null
-    dropAtEnd.value = false
+    if (node.children) {
+      result.push(...flattenTree(node.children, basePath))
+    }
   }
-
-  document.addEventListener('pointermove', tabDragMoveHandler, true)
-  document.addEventListener('pointerup', tabDragUpHandler, true)
+  return result
 }
 
-onClickOutside(dropdownRef, () => {
-  dropdownOpenId.value = null
+async function loadFileList() {
+  const workspace = workspacesStore.activeWorkspace
+  if (!workspace) {
+    allFiles.value = []
+    return
+  }
+  try {
+    const tree = await invoke<FileNode[]>('read_dir_tree', {
+      path: workspace.folderPath,
+      gitignore: true,
+    })
+    allFiles.value = flattenTree(tree, workspace.folderPath)
+  } catch {
+    allFiles.value = []
+  }
+}
+
+const filteredResults = computed(() => {
+  const q = searchQuery.value.trim().toLowerCase()
+  if (!q) return allFiles.value.slice(0, 50)
+  return allFiles.value
+    .filter(f => f.relativePath.toLowerCase().includes(q) || f.name.toLowerCase().includes(q))
+    .slice(0, 50)
 })
 
-
-function toggleDropdown(id: string, e: Event) {
-  e.stopPropagation()
-  dropdownOpenId.value = dropdownOpenId.value === id ? null : id
+function onSearchFocus() {
+  searchOpen.value = true
+  selectedIndex.value = 0
+  loadFileList()
 }
+
+function onSearchInput() {
+  searchOpen.value = true
+  selectedIndex.value = 0
+}
+
+function onSearchKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    closeSearch()
+    return
+  }
+  if (e.key === 'ArrowDown') {
+    e.preventDefault()
+    selectedIndex.value = Math.min(selectedIndex.value + 1, filteredResults.value.length - 1)
+    scrollSelectedIntoView()
+    return
+  }
+  if (e.key === 'ArrowUp') {
+    e.preventDefault()
+    selectedIndex.value = Math.max(selectedIndex.value - 1, 0)
+    scrollSelectedIntoView()
+    return
+  }
+  if (e.key === 'Enter') {
+    e.preventDefault()
+    const item = filteredResults.value[selectedIndex.value]
+    if (item) openSearchResult(item)
+    return
+  }
+}
+
+function scrollSelectedIntoView() {
+  nextTick(() => {
+    const el = document.querySelector('.qo-result-item.qo-selected')
+    el?.scrollIntoView({ block: 'nearest' })
+  })
+}
+
+async function openSearchResult(file: { name: string; path: string }) {
+  closeSearch()
+  try {
+    const content = await invoke<string>('read_file', { path: file.path })
+    appStore.openTab(file.path, content)
+    if (!appStore.editorVisible) {
+      appStore.toggleEditor()
+    }
+  } catch {
+    appStore.openTab(file.path, `// Could not read ${file.name}\n`)
+    if (!appStore.editorVisible) {
+      appStore.toggleEditor()
+    }
+  }
+}
+
+function onSearchBlur(e: FocusEvent) {
+  const relatedTarget = e.relatedTarget as Node | null
+  if (relatedTarget && searchContainerRef.value?.contains(relatedTarget)) {
+    return
+  }
+  closeSearch()
+}
+
+function closeSearch() {
+  searchOpen.value = false
+  searchQuery.value = ''
+  searchInputRef.value?.blur()
+}
+
+// ── Workspace actions (kept for global event + downstream use) ──
 
 async function switchWorkspace(id: string) {
-  // Save current canvas state before switching away
   const currentId = workspacesStore.activeWorkspaceId
   if (currentId) {
     await canvasStore.saveCanvasState(currentId)
   }
-
   workspacesStore.setActiveWorkspace(id)
-
-  // Only load from disk if we don't already have this canvas in memory
   if (!canvasStore.canvasStates.has(id)) {
     canvasStore.initCanvas(id)
     await canvasStore.loadCanvasState(id)
   }
+  // Track in navigation history
+  appStore.pushNavHistory()
 }
 
-function startRename(workspace: WorkspaceInfo) {
-  renamingId.value = workspace.id
-  renameValue.value = workspace.name
-  dropdownOpenId.value = null
-  nextTick(() => {
-    const input = document.querySelector<HTMLInputElement>('.rename-input')
-    input?.focus()
-    input?.select()
-  })
-}
-
-function finishRename(id: string) {
-  if (renameValue.value.trim()) {
-    workspacesStore.updateWorkspace(id, { name: renameValue.value.trim() })
-  }
-  renamingId.value = null
-}
-
-function closeWorkspace(id: string) {
-  dropdownOpenId.value = null
-  workspacesStore.removeWorkspace(id)
-}
-
-async function revealWorkspace(workspace: WorkspaceInfo) {
-  dropdownOpenId.value = null
-  try {
-    const { open } = await import('@tauri-apps/plugin-shell')
-    await open(workspace.folderPath)
-  } catch {
-    console.warn('Could not reveal folder')
-  }
-}
+// Register so app store can read workspace ID and switch during back/forward
+appStore.registerActiveWorkspaceGetter(() => workspacesStore.activeWorkspaceId)
+appStore.registerWorkspaceSwitch(switchWorkspace)
 
 async function openNewWorkspace() {
   let folderPath: string | null = null
-
   try {
     const { open } = await import('@tauri-apps/plugin-dialog')
     const selected = await open({ directory: true, multiple: false })
@@ -171,7 +169,6 @@ async function openNewWorkspace() {
   } catch {
     folderPath = prompt('Enter folder path:')
   }
-
   if (!folderPath) return
 
   const folderName = folderPath.split(/[/\\]/).pop() ?? 'Workspace'
@@ -186,25 +183,92 @@ async function openNewWorkspace() {
   switchWorkspace(workspace.id)
 }
 
+// Global shortcuts: Ctrl+P (search), Alt+Left/Right (back/forward)
+function onGlobalKeydown(e: KeyboardEvent) {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'p') {
+    e.preventDefault()
+    searchInputRef.value?.focus()
+    return
+  }
+  if (e.altKey && e.key === 'ArrowLeft') {
+    e.preventDefault()
+    appStore.navigateBack()
+    return
+  }
+  if (e.altKey && e.key === 'ArrowRight') {
+    e.preventDefault()
+    appStore.navigateForward()
+    return
+  }
+}
+
+// Mouse back/forward buttons (button 3 = back, button 4 = forward)
+function onMouseNav(e: MouseEvent) {
+  if (e.button === 3) {
+    e.preventDefault()
+    appStore.navigateBack()
+  } else if (e.button === 4) {
+    e.preventDefault()
+    appStore.navigateForward()
+  }
+}
+
+// ── Window controls (custom titlebar) ──
+const appWindow = getCurrentWindow()
+const isMaximized = ref(false)
+
+async function minimizeWindow() {
+  await appWindow.minimize()
+}
+
+async function toggleMaximize() {
+  await appWindow.toggleMaximize()
+  isMaximized.value = await appWindow.isMaximized()
+}
+
+async function closeWindow() {
+  await appWindow.close()
+}
+
+function onTitlebarMousedown(e: MouseEvent) {
+  // Only drag when clicking empty titlebar area, not interactive elements
+  if ((e.target as HTMLElement).closest('button, input, select, a, .window-controls, .settings-btn, .titlebar-logo-section')) return
+  appWindow.startDragging()
+}
+
+function onTitlebarDblclick(e: MouseEvent) {
+  if ((e.target as HTMLElement).closest('button, input, select, a, .window-controls, .settings-btn, .titlebar-logo-section')) return
+  toggleMaximize()
+}
+
 onMounted(() => {
   window.addEventListener('quantcode:open-workspace', openNewWorkspace)
+  window.addEventListener('keydown', onGlobalKeydown)
+  window.addEventListener('mouseup', onMouseNav)
+  // Track maximized state
+  appWindow.isMaximized().then(v => { isMaximized.value = v })
+  appWindow.onResized(async () => {
+    isMaximized.value = await appWindow.isMaximized()
+  })
 })
 
 onUnmounted(() => {
   window.removeEventListener('quantcode:open-workspace', openNewWorkspace)
+  window.removeEventListener('keydown', onGlobalKeydown)
+  window.removeEventListener('mouseup', onMouseNav)
 })
 </script>
 
 <template>
-  <div class="titlebar">
+  <div class="titlebar" @mousedown="onTitlebarMousedown" @dblclick="onTitlebarDblclick">
     <!-- Left: Logo container -->
     <div class="titlebar-logo-section" style="-webkit-app-region: no-drag; cursor: pointer;" @click="openNewWorkspace" title="Open workspace">
       <img :src="logoUrl" alt="QuantCode" class="titlebar-logo" />
     </div>
 
-    <!-- Center: Workspace tabs (VS Code style) -->
+    <!-- Center: File quick-open search -->
     <div class="titlebar-tabs-section">
-      <!-- Explorer toggle (far left of workspace area) — hidden in modern toggle style -->
+      <!-- Explorer toggle (far left) — hidden in modern toggle style -->
       <button
         v-if="appStore.panelToggleStyle !== 'modern'"
         class="sidebar-toggle sidebar-toggle-left"
@@ -219,57 +283,97 @@ onUnmounted(() => {
         </svg>
       </button>
 
-      <div class="tabs-scroll no-scrollbar" style="-webkit-app-region: no-drag">
-        <div
-          v-for="ws in workspacesStore.workspaces"
-          :key="ws.id"
-          class="relative flex items-center flex-shrink-0"
-          :class="{
-            'drop-before': dropBeforeTabId === ws.id,
-            'dragging': dragTabId === ws.id,
-          }"
-          :data-tab-drag-id="ws.id"
-          @pointerdown="onTabPointerDown($event, ws.id)"
-        >
-          <!-- Rename input -->
-          <template v-if="renamingId === ws.id">
-            <input
-              v-model="renameValue"
-              class="rename-input"
-              @keydown.enter="finishRename(ws.id)"
-              @keydown.escape="renamingId = null"
-              @blur="finishRename(ws.id)"
-            />
-          </template>
-          <template v-else>
+      <!-- Search bar (perfectly centered) with nav buttons anchored to its left -->
+      <div ref="searchContainerRef" class="qo-search-container" style="-webkit-app-region: no-drag">
+        <div class="qo-search-bar-wrapper">
+          <!-- Back / Forward — absolutely positioned to the left of the search bar -->
+          <div class="nav-buttons">
             <button
-              class="workspace-tab"
-              :class="{ active: ws.id === workspacesStore.activeWorkspaceId }"
-              :style="{ width: maxTabWidth + 'px' }"
-              @click="switchWorkspace(ws.id)"
-              @mousedown.middle.prevent="closeWorkspace(ws.id)"
-              @contextmenu.prevent="toggleDropdown(ws.id, $event)"
+              class="nav-btn"
+              :class="{ 'nav-btn--disabled': !appStore.canGoBack }"
+              title="Go Back (Alt+Left)"
+              :disabled="!appStore.canGoBack"
+              @click="appStore.navigateBack()"
             >
-              <span class="truncate">{{ ws.name }}</span>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="15 18 9 12 15 6" />
+              </svg>
             </button>
-
-            <!-- Context menu (right-click) -->
-            <div
-              v-if="dropdownOpenId === ws.id"
-              ref="dropdownRef"
-              class="workspace-dropdown"
+            <button
+              class="nav-btn"
+              :class="{ 'nav-btn--disabled': !appStore.canGoForward }"
+              title="Go Forward (Alt+Right)"
+              :disabled="!appStore.canGoForward"
+              @click="appStore.navigateForward()"
             >
-              <button class="dropdown-item" @click="startRename(ws)">Rename</button>
-              <button class="dropdown-item" @click="revealWorkspace(ws)">Reveal in Explorer</button>
-              <div class="dropdown-divider" />
-              <button class="dropdown-item dropdown-item-danger" @click="closeWorkspace(ws.id)">Close</button>
-            </div>
-          </template>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="9 18 15 12 9 6" />
+              </svg>
+            </button>
+          </div>
+
+          <!-- Search bar -->
+          <div class="qo-search-bar" :class="{ 'qo-search-bar--active': searchOpen }">
+            <svg class="qo-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="11" cy="11" r="8" />
+              <line x1="21" y1="21" x2="16.65" y2="16.65" />
+            </svg>
+            <input
+              ref="searchInputRef"
+              v-model="searchQuery"
+              type="text"
+              class="qo-search-input"
+              placeholder="Search files..."
+              @focus="onSearchFocus"
+              @input="onSearchInput"
+              @keydown="onSearchKeydown"
+              @blur="onSearchBlur"
+            />
+            <kbd v-if="!searchOpen" class="qo-shortcut">Ctrl+P</kbd>
+            <button v-if="searchQuery" class="qo-search-clear" @click="closeSearch">
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                <path d="M2 2l6 6M8 2l-6 6" stroke="currentColor" stroke-width="1.5" />
+              </svg>
+            </button>
+          </div>
+
+          <!-- Notes toggle — absolutely positioned to the right, classic style -->
+          <button
+            v-if="appStore.panelToggleStyle !== 'modern'"
+            class="nav-btn nav-btn-right"
+            :class="{ 'nav-btn--active': appStore.notesBarVisible }"
+            title="Toggle Notes (Ctrl+J)"
+            @click="appStore.toggleNotesBar()"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z" />
+              <polyline points="14 2 14 8 20 8" />
+              <line x1="8" y1="13" x2="16" y2="13" />
+              <line x1="8" y1="17" x2="12" y2="17" />
+            </svg>
+          </button>
         </div>
 
+        <!-- Results dropdown -->
+        <div v-if="searchOpen && (searchQuery || filteredResults.length)" class="qo-results">
+          <div v-if="!filteredResults.length" class="qo-results-empty">No files found</div>
+          <template v-else>
+            <button
+              v-for="(file, i) in filteredResults"
+              :key="file.path"
+              class="qo-result-item"
+              :class="{ 'qo-selected': i === selectedIndex }"
+              @click="openSearchResult(file)"
+              @mouseenter="selectedIndex = i"
+            >
+              <span class="qo-result-name">{{ file.name }}</span>
+              <span class="qo-result-path">{{ file.relativePath }}</span>
+            </button>
+          </template>
+        </div>
       </div>
 
-      <!-- Editor toggle (far right of workspace area) — hidden in modern toggle style -->
+      <!-- Editor toggle (far right) — hidden in modern toggle style -->
       <button
         v-if="appStore.panelToggleStyle !== 'modern'"
         class="sidebar-toggle sidebar-toggle-right"
@@ -286,41 +390,29 @@ onUnmounted(() => {
       </button>
     </div>
 
-    <!-- Right: Theme toggle + Settings -->
+    <!-- Right: Settings + Window Controls -->
     <div class="titlebar-actions-section" style="-webkit-app-region: no-drag">
-      <!-- Theme pill switch -->
-      <button
-        class="theme-pill"
-        :class="{ 'is-dark': appStore.theme === 'dark' }"
-        :title="appStore.theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'"
-        @click="appStore.toggleTheme()"
-      >
-        <span class="theme-pill-thumb" />
-        <span class="theme-pill-option" :class="{ 'option-active': appStore.theme === 'light' }">
-          <svg class="theme-icon" viewBox="0 0 24 24" aria-hidden="true">
-            <circle cx="12" cy="12" r="4.5" />
-            <path d="M12 2.5V5" /><path d="M12 19V21.5" />
-            <path d="M4.5 4.5L6.3 6.3" /><path d="M17.7 17.7L19.5 19.5" />
-            <path d="M2.5 12H5" /><path d="M19 12H21.5" />
-            <path d="M4.5 19.5L6.3 17.7" /><path d="M17.7 6.3L19.5 4.5" />
-          </svg>
-          <span class="theme-label">Light</span>
-        </span>
-        <span class="theme-pill-option" :class="{ 'option-active': appStore.theme === 'dark' }">
-          <svg class="theme-icon" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M12 3a7.5 7.5 0 1 0 9 9 7 7 0 1 1-9-9z" />
-          </svg>
-          <span class="theme-label">Dark</span>
-        </span>
-      </button>
-
-      <!-- Settings -->
+      <!-- Settings (far left) -->
       <button
         class="settings-btn"
         :class="{ 'settings-btn-active': appStore.settingsModalOpen }"
         title="Settings"
         @click.stop="appStore.openSettingsModal()"
       >&#9881;</button>
+
+      <!-- Window controls -->
+      <div class="window-controls">
+        <button class="window-btn" title="Minimize" @click="minimizeWindow">
+          <svg width="12" height="12" viewBox="0 0 12 12"><path d="M2 6h8" stroke="currentColor" stroke-width="1.2" /></svg>
+        </button>
+        <button class="window-btn" :title="isMaximized ? 'Restore' : 'Maximize'" @click="toggleMaximize">
+          <svg v-if="!isMaximized" width="12" height="12" viewBox="0 0 12 12"><rect x="1.5" y="1.5" width="9" height="9" rx="1" stroke="currentColor" stroke-width="1.2" fill="none" /></svg>
+          <svg v-else width="12" height="12" viewBox="0 0 12 12"><rect x="2.5" y="3.5" width="7" height="7" rx="1" stroke="currentColor" stroke-width="1.2" fill="none" /><path d="M4.5 3.5V2.5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H8.5" stroke="currentColor" stroke-width="1.2" fill="none" /></svg>
+        </button>
+        <button class="window-btn window-btn-close" title="Close" @click="closeWindow">
+          <svg width="12" height="12" viewBox="0 0 12 12"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7" stroke="currentColor" stroke-width="1.2" /></svg>
+        </button>
+      </div>
     </div>
   </div>
 </template>
@@ -390,7 +482,7 @@ onUnmounted(() => {
   object-fit: contain;
 }
 
-/* ---- Center: Tabs ---- */
+/* ---- Center: Search area ---- */
 .titlebar-tabs-section {
   flex: 1;
   min-width: 0;
@@ -398,156 +490,218 @@ onUnmounted(() => {
   align-items: stretch;
 }
 
-.tabs-scroll {
+/* ---- Back / Forward nav buttons ---- */
+.nav-buttons {
+  position: absolute;
+  right: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%);
   display: flex;
-  align-items: stretch;
-  justify-content: center;
-  gap: 0;
-  overflow-x: auto;
-  flex: 1;
+  align-items: center;
+  gap: 2px;
 }
 
-.workspace-tab {
-  display: inline-flex;
+.nav-btn {
+  display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: 0 14px;
-  font-size: 12px;
-  font-weight: 500;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
   color: var(--qc-text-muted);
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.nav-btn:hover:not(:disabled) {
+  color: var(--qc-text);
+  background: color-mix(in srgb, var(--qc-text) 8%, transparent);
+}
+
+.nav-btn:active:not(:disabled) {
+  opacity: 0.5;
+}
+
+.nav-btn--disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
+.nav-btn-right {
+  position: absolute;
+  left: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.nav-btn--active {
+  color: var(--qc-text);
+}
+
+/* ---- Quick-open search bar ---- */
+.qo-search-container {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  padding: 0 16px;
+}
+
+.qo-search-bar-wrapper {
+  position: relative;
+  width: 100%;
+  max-width: 480px;
+}
+
+.qo-search-bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  border: 1px solid var(--qc-border);
+  border-radius: 8px;
+  background: var(--qc-bg-header);
+  transition: border-color 0.15s, background-color 0.15s, box-shadow 0.15s;
+}
+
+.qo-search-bar:hover {
+  border-color: color-mix(in srgb, var(--qc-text) 20%, transparent);
+}
+
+.qo-search-bar--active {
+  border-color: color-mix(in srgb, var(--qc-text) 30%, transparent);
+  background: color-mix(in srgb, var(--qc-text) 4%, var(--qc-bg-header));
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.qo-search-icon {
+  position: absolute;
+  left: 10px;
+  color: var(--qc-text-muted);
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.qo-search-input {
+  width: 100%;
+  height: 100%;
+  padding: 0 32px 0 32px;
+  font-family: var(--qc-font-mono, 'SF Mono', 'Cascadia Code', 'Fira Code', monospace);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--qc-text);
   background: transparent;
   border: none;
-  border-left: 1px solid var(--qc-border);
-  border-right: 1px solid var(--qc-border);
-  border-bottom: 2px solid transparent;
-  cursor: pointer;
-  transition: all 0.15s ease;
-  white-space: nowrap;
-  height: 100%;
+  outline: none;
 }
 
-.workspace-tab:hover {
-  color: var(--qc-text);
-  background: var(--qc-bg-header);
-}
-
-.workspace-tab.active {
-  color: var(--qc-text);
-  border-bottom-color: var(--qc-text);
-  background: var(--qc-bg-header);
-}
-
-.tab-close {
-  font-size: 9px;
-  color: var(--qc-text-dim);
-  cursor: pointer;
-  transition: all 0.15s;
-  opacity: 0;
-  margin-left: 2px;
-  width: 16px;
-  height: 16px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 4px;
-}
-
-.workspace-tab:hover .tab-close {
-  opacity: 1;
-}
-
-.tab-close:hover {
-  color: var(--qc-text);
-  background: rgba(255, 255, 255, 0.1);
-}
-
-/* ---- Drag-and-drop reorder ---- */
-.dragging {
+.qo-search-input::placeholder {
+  color: var(--qc-text-muted);
   opacity: 0.4;
 }
 
-.drop-before {
-  box-shadow: inset 2px 0 0 0 var(--qc-text);
+.qo-shortcut {
+  position: absolute;
+  right: 8px;
+  font-family: var(--qc-font-mono, 'SF Mono', 'Cascadia Code', 'Fira Code', monospace);
+  font-size: 10px;
+  color: var(--qc-text-muted);
+  opacity: 0.4;
+  background: var(--qc-bg-surface);
+  border: 1px solid var(--qc-border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  pointer-events: none;
+  line-height: 1.4;
 }
 
-:global(body.tab-dragging) {
-  user-select: none;
-  cursor: grabbing;
-}
-
-.new-tab-btn {
+.qo-search-clear {
+  position: absolute;
+  right: 6px;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  flex-shrink: 0;
-  font-size: 16px;
-  color: var(--qc-text-muted);
-  background: transparent;
+  width: 18px;
+  height: 18px;
   border: none;
-  border-left: 1px solid var(--qc-border);
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.new-tab-btn:hover {
-  color: var(--qc-text);
-  background: var(--qc-bg-header);
-}
-
-.rename-input {
-  padding: 4px 10px;
-  font-size: 12px;
-  font-weight: 500;
-  outline: none;
-  width: 130px;
-  background: var(--qc-bg-header);
-  border: 1px solid var(--qc-text-muted);
   border-radius: 4px;
-  color: var(--qc-text);
+  background: transparent;
+  color: var(--qc-text-muted);
+  cursor: pointer;
+  opacity: 0.5;
+  transition: opacity 0.15s;
 }
 
-.workspace-dropdown {
+.qo-search-clear:hover {
+  opacity: 1;
+}
+
+/* ---- Results dropdown ---- */
+.qo-results {
   position: absolute;
-  top: 100%;
-  left: 0;
-  margin-top: 4px;
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-  z-index: 9999;
-  min-width: 150px;
-  padding: 4px;
+  top: calc(50% + 20px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: 100%;
+  max-width: 480px;
+  max-height: 320px;
+  overflow-y: auto;
   background: var(--qc-bg-header);
   border: 1px solid var(--qc-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  z-index: 9999;
+  padding: 4px;
 }
 
-.dropdown-item {
-  display: block;
-  width: 100%;
-  text-align: left;
-  padding: 6px 10px;
+.qo-results-empty {
+  padding: 12px 16px;
   font-size: 11px;
-  border-radius: 4px;
-  color: var(--qc-text);
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  transition: background 0.15s;
+  color: var(--qc-text-muted);
+  text-align: center;
 }
 
-.dropdown-item:hover {
+.qo-result-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  font-size: 12px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--qc-text);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.1s;
+}
+
+.qo-result-item:hover,
+.qo-result-item.qo-selected {
   background: var(--qc-bg-surface);
 }
 
-.dropdown-item-danger {
-  color: #ef4444;
+.qo-result-name {
+  flex-shrink: 0;
+  font-weight: 500;
 }
 
-.dropdown-divider {
-  height: 1px;
-  margin: 4px 0;
-  background: var(--qc-border);
+.qo-result-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--qc-text-muted);
+  opacity: 0.6;
+  text-align: right;
 }
 
 /* ---- Right: Actions ---- */
@@ -556,80 +710,9 @@ onUnmounted(() => {
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
   gap: 8px;
-  padding: 0 8px;
+  padding: 0 0 0 8px;
   border-left: 1px solid var(--qc-border);
-}
-
-/* Theme pill toggle (matches QuantMCP) */
-.theme-pill {
-  position: relative;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  align-items: center;
-  flex: 1;
-  min-width: 0;
-  height: 34px;
-  border: 1px solid var(--qc-border);
-  border-radius: 999px;
-  background: var(--qc-bg-header);
-  padding: 2px;
-  cursor: pointer;
-  transition: border-color 0.15s;
-}
-
-.theme-pill:hover {
-  border-color: var(--color-accent);
-}
-
-.theme-pill-thumb {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: calc(50% - 2px);
-  height: 28px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--qc-bg-surface) 86%, transparent);
-  border: 1px solid color-mix(in srgb, var(--qc-border) 86%, transparent);
-  transition: transform 0.2s ease;
-}
-
-.theme-pill.is-dark .theme-pill-thumb {
-  transform: translateX(calc(100% + 2px));
-}
-
-.theme-pill-option {
-  position: relative;
-  z-index: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-  color: var(--qc-text-dim);
-  user-select: none;
-}
-
-.theme-pill-option.option-active {
-  color: var(--qc-text);
-}
-
-.theme-label {
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.theme-icon {
-  width: 20px;
-  height: 20px;
-  stroke: currentColor;
-  fill: none;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 
 .settings-btn {
@@ -647,6 +730,7 @@ onUnmounted(() => {
   cursor: pointer;
   transition: all 0.15s;
   flex-shrink: 0;
+  margin: 0 auto;
 }
 
 .settings-btn:hover,
@@ -656,11 +740,43 @@ onUnmounted(() => {
   background: var(--qc-bg-surface);
 }
 
-.no-scrollbar::-webkit-scrollbar {
-  display: none;
+/* ---- Window controls ---- */
+.window-controls {
+  display: flex;
+  align-items: stretch;
+  height: 100%;
+  flex-shrink: 0;
 }
-.no-scrollbar {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
+
+.window-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 51px;
+  height: 100%;
+  border: none;
+  background: transparent;
+  color: var(--qc-text-muted);
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+
+.window-btn:hover {
+  background: color-mix(in srgb, var(--qc-text) 10%, transparent);
+  color: var(--qc-text);
+}
+
+.window-btn:active {
+  background: color-mix(in srgb, var(--qc-text) 16%, transparent);
+}
+
+.window-btn-close:hover {
+  background: #e81123;
+  color: #fff;
+}
+
+.window-btn-close:active {
+  background: #c50f1f;
+  color: #fff;
 }
 </style>

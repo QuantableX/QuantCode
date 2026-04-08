@@ -196,7 +196,7 @@ The core differentiator. Specs are the source of truth for the project.
 - `.quantcode/specs/*.spec.md` files define goals, tasks, decisions, and constraints
 - Specs link to code symbols — when code changes, specs reflect it
 - Agents read specs before acting and update them after completing work
-- Spec Dashboard window shows live status: planned → in-progress → done
+- Spec Dashboard window shows live status: open → done
 
 ### Multi-Agent Orchestration
 

@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { v4 as uuidv4 } from 'uuid'
-import type { EditorTab } from '../shared/types'
+import type { EditorTab, NavHistoryEntry } from '../shared/types'
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'bmp', 'avif'])
 
@@ -45,6 +45,7 @@ function extractFileName(filePath: string): string {
 export type Theme = 'dark' | 'light'
 export type ShellType = 'powershell' | 'cmd' | 'bash' | 'wsl' | 'git-bash'
 export type PanelToggleStyle = 'both' | 'modern' | 'classic'
+export type SidebarInitialWidth = 'default' | 'wide'
 
 export const SHELL_OPTIONS: { value: ShellType; label: string; path: string }[] = [
   { value: 'powershell', label: 'PowerShell', path: 'powershell.exe' },
@@ -70,14 +71,37 @@ export const useAppStore = defineStore('app', () => {
   const fontSize = ref<number>(typeof localStorage !== 'undefined' ? Number(localStorage.getItem('qc-font-size')) || 15 : 15)
   const canvasHints = ref<boolean>(typeof localStorage !== 'undefined' ? localStorage.getItem('qc-canvas-hints') !== 'false' : true)
   const editorMinimap = ref<boolean>(typeof localStorage !== 'undefined' ? localStorage.getItem('qc-editor-minimap') !== 'false' : true)
+  const canvasMinimap = ref<boolean>(typeof localStorage !== 'undefined' ? localStorage.getItem('qc-canvas-minimap') !== 'false' : true)
   const notesBarVisible = ref(false)
   const panelToggleStyle = ref<PanelToggleStyle>((typeof localStorage !== 'undefined' && localStorage.getItem('qc-panel-toggle-style') as PanelToggleStyle) || 'both')
+  const sidebarInitialWidth = ref<SidebarInitialWidth>((typeof localStorage !== 'undefined' && localStorage.getItem('qc-sidebar-initial-width') as SidebarInitialWidth) || 'default')
+
+  // ---- Navigation history (tracks workspace + tab) ----
+  const navHistory = ref<NavHistoryEntry[]>([])
+  const navHistoryIndex = ref(-1)
+  const _navigating = ref(false)
+  // Workspace switch function — registered by WorkspaceSwitcher on mount
+  let _switchWorkspaceFn: ((id: string) => Promise<void>) | null = null
+
+  function registerWorkspaceSwitch(fn: (id: string) => Promise<void>): void {
+    _switchWorkspaceFn = fn
+  }
+
+  // External getter for active workspace ID — avoids circular store imports
+  let _activeWorkspaceId: (() => string | null) = () => null
+
+  function registerActiveWorkspaceGetter(fn: () => string | null): void {
+    _activeWorkspaceId = fn
+  }
 
   // ---- Getters ----
   const activeTab = computed<EditorTab | undefined>(() => {
     if (!activeTabId.value) return undefined
     return activeEditorTabs.value.find(t => t.id === activeTabId.value)
   })
+
+  const canGoBack = computed(() => navHistoryIndex.value > 0)
+  const canGoForward = computed(() => navHistoryIndex.value < navHistory.value.length - 1)
 
   // ---- Actions ----
 
@@ -167,10 +191,24 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
+  function setSidebarInitialWidth(width: SidebarInitialWidth): void {
+    sidebarInitialWidth.value = width
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('qc-sidebar-initial-width', width)
+    }
+  }
+
   function toggleEditorMinimap(): void {
     editorMinimap.value = !editorMinimap.value
     if (typeof localStorage !== 'undefined') {
       localStorage.setItem('qc-editor-minimap', String(editorMinimap.value))
+    }
+  }
+
+  function toggleCanvasMinimap(): void {
+    canvasMinimap.value = !canvasMinimap.value
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('qc-canvas-minimap', String(canvasMinimap.value))
     }
   }
 
@@ -180,10 +218,81 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
+  function pushNavHistory(): void {
+    if (_navigating.value) return
+    const wsId = _activeWorkspaceId()
+    const tabId = activeTabId.value
+    const entry: NavHistoryEntry = { workspaceId: wsId, tabId }
+
+    // Trim forward history
+    let hist = navHistory.value
+    if (navHistoryIndex.value < hist.length - 1) {
+      hist = hist.slice(0, navHistoryIndex.value + 1)
+    }
+    // Avoid duplicating identical consecutive entries
+    const last = hist[hist.length - 1]
+    if (last && last.workspaceId === entry.workspaceId && last.tabId === entry.tabId) {
+      return
+    }
+    navHistory.value = [...hist, entry]
+    navHistoryIndex.value = navHistory.value.length - 1
+  }
+
+  async function navigateBack(): Promise<void> {
+    if (!canGoBack.value) return
+    _navigating.value = true
+    try {
+      navHistoryIndex.value--
+      const entry = navHistory.value[navHistoryIndex.value]
+      if (!entry) return
+      // Switch workspace if needed
+      const currentWs = _activeWorkspaceId()
+      if (entry.workspaceId && entry.workspaceId !== currentWs && _switchWorkspaceFn) {
+        await _switchWorkspaceFn(entry.workspaceId)
+      }
+      // Restore tab if it still exists
+      if (entry.tabId) {
+        const tab = activeEditorTabs.value.find(t => t.id === entry.tabId)
+        if (tab) {
+          activeTabId.value = entry.tabId
+          if (!editorVisible.value) editorVisible.value = true
+        }
+      }
+    } finally {
+      _navigating.value = false
+    }
+  }
+
+  async function navigateForward(): Promise<void> {
+    if (!canGoForward.value) return
+    _navigating.value = true
+    try {
+      navHistoryIndex.value++
+      const entry = navHistory.value[navHistoryIndex.value]
+      if (!entry) return
+      // Switch workspace if needed
+      const currentWs = _activeWorkspaceId()
+      if (entry.workspaceId && entry.workspaceId !== currentWs && _switchWorkspaceFn) {
+        await _switchWorkspaceFn(entry.workspaceId)
+      }
+      // Restore tab if it still exists
+      if (entry.tabId) {
+        const tab = activeEditorTabs.value.find(t => t.id === entry.tabId)
+        if (tab) {
+          activeTabId.value = entry.tabId
+          if (!editorVisible.value) editorVisible.value = true
+        }
+      }
+    } finally {
+      _navigating.value = false
+    }
+  }
+
   function openTab(filePath: string, content: string): void {
     const existingTab = activeEditorTabs.value.find(t => t.filePath === filePath)
     if (existingTab) {
       activeTabId.value = existingTab.id
+      pushNavHistory()
       return
     }
 
@@ -200,6 +309,7 @@ export const useAppStore = defineStore('app', () => {
 
     activeEditorTabs.value.push(tab)
     activeTabId.value = tab.id
+    pushNavHistory()
   }
 
   function closeTab(tabId: string): void {
@@ -222,6 +332,7 @@ export const useAppStore = defineStore('app', () => {
     const tab = activeEditorTabs.value.find(t => t.id === tabId)
     if (tab) {
       activeTabId.value = tabId
+      pushTabHistory(tabId)
     }
   }
 
@@ -296,6 +407,8 @@ export const useAppStore = defineStore('app', () => {
     editorVisible,
     activeEditorTabs,
     activeTabId,
+    navHistory,
+    navHistoryIndex,
     commandPaletteOpen,
     settingsOpen,
     settingsModalOpen,
@@ -306,11 +419,20 @@ export const useAppStore = defineStore('app', () => {
     fontSize,
     canvasHints,
     editorMinimap,
+    canvasMinimap,
     notesBarVisible,
     panelToggleStyle,
+    sidebarInitialWidth,
     // Getters
     activeTab,
+    canGoBack,
+    canGoForward,
     // Actions
+    navigateBack,
+    navigateForward,
+    pushNavHistory,
+    registerWorkspaceSwitch,
+    registerActiveWorkspaceGetter,
     toggleFileExplorer,
     toggleEditor,
     setTheme,
@@ -323,8 +445,10 @@ export const useAppStore = defineStore('app', () => {
     toggleSnapCameraToGrid,
     toggleCanvasHints,
     toggleEditorMinimap,
+    toggleCanvasMinimap,
     toggleNotesBar,
     setPanelToggleStyle,
+    setSidebarInitialWidth,
     setFontSize,
     applyFontSize,
     applyTheme,

@@ -72,6 +72,12 @@ const typeIcon = computed(() => {
   return icons[props.window.type] ?? '\u25C7'
 })
 
+const windowGridLabel = computed(() => {
+  const columns = Math.max(1, Math.round(props.window.position.width / GRID_SIZE))
+  const rows = Math.max(1, Math.round(props.window.position.height / GRID_SIZE))
+  return `${columns}×${rows}`
+})
+
 function bringToFront() {
   canvasStore.bringToFront(workspaceId.value, props.window.id)
 }
@@ -297,70 +303,86 @@ function onWindowClick() {
   >
     <!-- Header -->
     <div
-      class="h-8 flex items-center px-3 gap-2 flex-shrink-0 cursor-move select-none outline-none"
+      class="relative h-8 flex items-center px-3 flex-shrink-0 cursor-move select-none outline-none"
       :style="{ background: 'var(--qc-bg-header)', borderBottom: '1px solid var(--qc-border)' }"
       tabindex="0"
       @mousedown="startDrag"
       @keydown.ctrl.c.prevent.stop="copyWindow"
     >
       <!-- Icon + Title -->
-      <span class="text-xs text-[#a0a0a8]">{{ typeIcon }}</span>
-      <span class="text-xs font-medium truncate flex-1" :style="{ color: 'var(--qc-text)' }">{{ window.title }}</span>
+      <div class="min-w-0 max-w-[calc(50%-56px)] flex items-center gap-2">
+        <span class="text-xs text-[#a0a0a8] flex-shrink-0">{{ typeIcon }}</span>
+        <span class="text-xs font-medium truncate" :style="{ color: 'var(--qc-text)' }">{{ window.title }}</span>
+      </div>
 
-      <!-- Attach file (terminal only) -->
-      <button
-        v-if="window.type === 'terminal'"
-        class="w-5 h-5 flex items-center justify-center transition-colors rounded"
-        :style="{ color: 'var(--qc-text-muted)' }"
-        @mousedown.stop
-        @click.stop="attachFile"
-        title="Attach file"
-      >
-        <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-        </svg>
-      </button>
-
-      <!-- Status badge -->
+      <!-- Grid dimensions -->
       <span
-        class="w-2 h-2 rounded-full flex-shrink-0"
-        :style="{ backgroundColor: statusColor }"
-        :title="window.status"
-      />
-
-      <!-- Copy -->
-      <button
-        class="w-5 h-5 flex items-center justify-center transition-colors rounded text-xs"
-        :style="{ color: 'var(--qc-text-muted)' }"
-        @mousedown.stop
-        @click.stop="copyWindow"
-        title="Copy window"
+        class="absolute left-1/2 -translate-x-1/2 pointer-events-none z-10 text-[10px] font-mono tracking-wide px-1.5 py-0.5 rounded"
+        :style="{
+          color: 'var(--qc-text-dim)',
+          background: 'color-mix(in srgb, var(--qc-bg-window) 88%, transparent)',
+          border: '1px solid var(--qc-border)',
+        }"
       >
-        <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-        </svg>
-      </button>
+        {{ windowGridLabel }}
+      </span>
 
-      <!-- Minimize -->
-      <button
-        class="w-5 h-5 flex items-center justify-center transition-colors rounded text-xs"
-        :style="{ color: 'var(--qc-text-muted)' }"
-        @mousedown.stop
-        @click.stop="toggleMinimize"
-        title="Minimize"
-      >
-        &#8722;
-      </button>
+      <div class="ml-auto flex items-center gap-1">
+        <!-- Attach file (terminal only) -->
+        <button
+          v-if="window.type === 'terminal'"
+          class="w-5 h-5 flex items-center justify-center transition-colors rounded"
+          :style="{ color: 'var(--qc-text-muted)' }"
+          @mousedown.stop
+          @click.stop="attachFile"
+          title="Attach file"
+        >
+          <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+          </svg>
+        </button>
 
-      <!-- Close -->
-      <button
-        class="w-5 h-5 flex items-center justify-center text-red-400/60 hover:text-red-400 transition-colors rounded text-xs"
-        @mousedown.stop
-        @click.stop="closeWindow"
-        title="Close"
-      >
-        &#10005;
-      </button>
+        <!-- Status badge -->
+        <span
+          class="w-2 h-2 rounded-full flex-shrink-0"
+          :style="{ backgroundColor: statusColor }"
+          :title="window.status"
+        />
+
+        <!-- Copy -->
+        <button
+          class="w-5 h-5 flex items-center justify-center transition-colors rounded text-xs"
+          :style="{ color: 'var(--qc-text-muted)' }"
+          @mousedown.stop
+          @click.stop="copyWindow"
+          title="Copy window"
+        >
+          <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+          </svg>
+        </button>
+
+        <!-- Minimize -->
+        <button
+          class="w-5 h-5 flex items-center justify-center transition-colors rounded text-xs"
+          :style="{ color: 'var(--qc-text-muted)' }"
+          @mousedown.stop
+          @click.stop="toggleMinimize"
+          title="Minimize"
+        >
+          &#8722;
+        </button>
+
+        <!-- Close -->
+        <button
+          class="w-5 h-5 flex items-center justify-center text-red-400/60 hover:text-red-400 transition-colors rounded text-xs"
+          @mousedown.stop
+          @click.stop="closeWindow"
+          title="Close"
+        >
+          &#10005;
+        </button>
+      </div>
     </div>
 
     <!-- Body -->

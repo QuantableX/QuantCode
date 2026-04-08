@@ -9,7 +9,8 @@ const appStore = useAppStore()
 
 const rightSidebarWidth = inject<Ref<number>>('rightSidebarWidth', ref(220))
 
-const visible = ref(true)
+const expanded = ref(true)
+
 const minimapRef = ref<HTMLElement | null>(null)
 const canvasRef = inject<Ref<HTMLElement | null>>('canvasRef', ref(null))
 
@@ -99,11 +100,12 @@ function toMinimapCoords(x: number, y: number) {
 const windowRects = computed(() =>
   windows.value.map((w) => {
     const pos = toMinimapCoords(w.position.x, w.position.y)
-    const colors: Record<string, string> = {
-      agent: '#a0a0a8',
-      terminal: '#22d3ee',
-      diff: '#2ed573',
-      spec: '#3b82f6',
+    // Different gray intensities per window type — theme-adaptive via --qc-text
+    const mixPcts: Record<string, number> = {
+      agent: 50,
+      terminal: 65,
+      diff: 40,
+      spec: 55,
     }
     return {
       id: w.id,
@@ -111,7 +113,7 @@ const windowRects = computed(() =>
       y: pos.y,
       width: w.position.width * minimapScale.value,
       height: w.position.height * minimapScale.value,
-      color: colors[w.type] ?? '#57606f',
+      mix: mixPcts[w.type] ?? 35,
     }
   })
 )
@@ -161,30 +163,30 @@ function onMinimapClick(e: MouseEvent) {
 </script>
 
 <template>
-  <div class="absolute bottom-3 z-10 transition-[right] duration-250 ease-[cubic-bezier(0.4,0,0.2,1)]" :style="{ right: appStore.editorVisible ? (rightSidebarWidth + 12) + 'px' : '12px' }">
-    <!-- Toggle button -->
+  <div v-if="appStore.canvasMinimap" class="absolute bottom-3 z-10 transition-[right] duration-250 ease-[cubic-bezier(0.4,0,0.2,1)]" :style="{ right: appStore.editorVisible ? (rightSidebarWidth + 12) + 'px' : '12px' }">
+    <!-- Toggle button (minimized state) -->
     <button
-      v-if="!visible"
+      v-if="!expanded"
       class="rounded px-2 py-1 text-[10px] transition-colors"
       :style="{ background: 'var(--qc-bg-header)', border: '1px solid var(--qc-border)', color: 'var(--qc-text-muted)' }"
-      @click="visible = true"
+      @click="expanded = true"
     >
       Map
     </button>
 
-    <!-- Minimap -->
+    <!-- Minimap (expanded state) -->
     <div
-      v-if="visible"
+      v-if="expanded"
       ref="minimapRef"
       class="rounded-lg overflow-hidden cursor-pointer relative"
       :style="{ width: MINIMAP_W + 'px', height: MINIMAP_H + 'px', background: 'color-mix(in srgb, var(--qc-bg-titlebar) 90%, transparent)', border: '1px solid var(--qc-border)' }"
       @click="onMinimapClick"
     >
-      <!-- Close button -->
+      <!-- Close/minimize button -->
       <button
         class="absolute top-1 right-1 z-10 w-4 h-4 flex items-center justify-center text-[8px] transition-colors"
         :style="{ color: 'var(--qc-text-muted)' }"
-        @click.stop="visible = false"
+        @click.stop="expanded = false"
       >
         &#10005;
       </button>
@@ -199,7 +201,7 @@ function onMinimapClick(e: MouseEvent) {
           top: wr.y + 'px',
           width: Math.max(4, wr.width) + 'px',
           height: Math.max(3, wr.height) + 'px',
-          backgroundColor: wr.color,
+          backgroundColor: `color-mix(in srgb, var(--qc-text) ${wr.mix}%, transparent)`,
         }"
       />
 

@@ -15,6 +15,21 @@ export function parseSpecFile(filePath: string, rawContent: string): SpecFile {
   }
 }
 
+function normalizeSpecStatus(value: unknown): SpecStatus {
+  switch (value) {
+    case 'done':
+      return 'done'
+    case 'verify':
+      return 'verify'
+    case 'open':
+    case 'planned':
+    case 'in-progress':
+    case 'blocked':
+    default:
+      return 'open'
+  }
+}
+
 function parseFrontmatter(raw: string): SpecFrontmatter {
   const lines = raw.split('\n')
   let inFrontmatter = false
@@ -39,9 +54,10 @@ function parseFrontmatter(raw: string): SpecFrontmatter {
 
   return {
     title: (parsed.title as string) || 'Untitled Spec',
-    status: (parsed.status as SpecStatus) || 'planned',
+    status: normalizeSpecStatus(parsed.status),
     priority: parsed.priority as SpecFrontmatter['priority'],
     assignedTo: parsed.assignedTo as string | undefined,
+    verifyMode: parsed.verifyMode === true || parsed.verifyMode === 'true',
     linkedFiles: parseStringArray(parsed.linkedFiles),
     tags: parseStringArray(parsed.tags),
     createdAt: (parsed.createdAt as string) || new Date().toISOString(),
@@ -169,6 +185,9 @@ export function serializeSpec(spec: SpecFile): string {
   }
   if (fm.assignedTo) {
     lines.push(`assignedTo: ${fm.assignedTo}`)
+  }
+  if (fm.verifyMode) {
+    lines.push(`verifyMode: true`)
   }
   lines.push('linkedFiles:')
   if (fm.linkedFiles && fm.linkedFiles.length > 0) {

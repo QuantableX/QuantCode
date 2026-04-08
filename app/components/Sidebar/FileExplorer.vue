@@ -1,12 +1,85 @@
 <script setup lang="ts">
 import { invoke } from '@tauri-apps/api/core'
 import { useWorkspacesStore } from '../../../stores/workspaces'
+import { useCanvasStore } from '../../../stores/canvas'
 import { useAppStore } from '../../../stores/app'
-import type { FileNode, GitFileStatus } from '../../../shared/types'
+import { v4 as uuidv4 } from 'uuid'
+import type { FileNode, GitFileStatus, WorkspaceInfo } from '../../../shared/types'
 import { onClickOutside } from '@vueuse/core'
 
 const workspacesStore = useWorkspacesStore()
+const canvasStore = useCanvasStore()
 const appStore = useAppStore()
+
+// ── Workspace selector dropdown ──
+const wsDropdownOpen = ref(false)
+const wsDropdownRef = ref<HTMLElement | null>(null)
+
+onClickOutside(wsDropdownRef, () => {
+  wsDropdownOpen.value = false
+})
+
+const activeWsParentPath = computed(() => {
+  const ws = workspacesStore.activeWorkspace
+  if (!ws) return ''
+  const parts = ws.folderPath.replace(/\\/g, '/').split('/').filter(Boolean)
+  if (parts.length <= 1) return ''
+  return parts.slice(0, -1).join('/') + ' /'
+})
+
+const activeWsFolderName = computed(() => {
+  const ws = workspacesStore.activeWorkspace
+  if (!ws) return 'No workspace'
+  return ws.folderPath.replace(/\\/g, '/').split('/').filter(Boolean).pop() || ws.name
+})
+
+async function wsSwitchTo(id: string) {
+  wsDropdownOpen.value = false
+  const currentId = workspacesStore.activeWorkspaceId
+  if (currentId === id) return
+  if (currentId) {
+    await canvasStore.saveCanvasState(currentId)
+  }
+  workspacesStore.setActiveWorkspace(id)
+  if (!canvasStore.canvasStates.has(id)) {
+    canvasStore.initCanvas(id)
+    await canvasStore.loadCanvasState(id)
+  }
+  appStore.pushNavHistory()
+}
+
+function wsRemove(id: string) {
+  workspacesStore.removeWorkspace(id)
+  if (!workspacesStore.workspaces.length) {
+    wsDropdownOpen.value = false
+  }
+}
+
+async function wsAdd() {
+  wsDropdownOpen.value = false
+  let folderPath: string | null = null
+  try {
+    const { open } = await import('@tauri-apps/plugin-dialog')
+    const selected = await open({ directory: true, multiple: false })
+    if (typeof selected === 'string') {
+      folderPath = selected
+    }
+  } catch {
+    folderPath = prompt('Enter folder path:')
+  }
+  if (!folderPath) return
+
+  const folderName = folderPath.split(/[/\\]/).pop() ?? 'Workspace'
+  const workspace: WorkspaceInfo = {
+    id: uuidv4(),
+    name: folderName,
+    folderPath,
+    lastOpened: new Date().toISOString(),
+    createdAt: new Date().toISOString(),
+  }
+  workspacesStore.addWorkspace(workspace)
+  wsSwitchTo(workspace.id)
+}
 
 const fileTree = ref<FileNode[]>([])
 const filterText = ref('')
@@ -482,6 +555,45 @@ onUnmounted(() => {
 
 <template>
   <div class="explorer" :style="{ background: 'var(--qc-bg-titlebar)' }">
+    <!-- Workspace selector dropdown -->
+    <div ref="wsDropdownRef" class="ws-selector">
+      <button class="ws-trigger" @click="wsDropdownOpen = !wsDropdownOpen">
+        <div class="ws-trigger-text">
+          <span class="ws-parent-path">{{ activeWsParentPath }}</span>
+          <span class="ws-folder-name">{{ activeWsFolderName }}</span>
+        </div>
+        <svg class="ws-caret" :class="{ 'ws-caret--open': wsDropdownOpen }" width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
+          <path d="M3 4l2 2.5L7 4" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </button>
+      <Transition name="ws-drop">
+        <div v-if="wsDropdownOpen" class="ws-menu">
+          <div
+            v-for="ws in workspacesStore.workspaces"
+            :key="ws.id"
+            class="ws-menu-item"
+            :class="{ 'ws-menu-item--active': ws.id === workspacesStore.activeWorkspaceId }"
+            @click="wsSwitchTo(ws.id)"
+          >
+            <span class="ws-menu-item-name">{{ ws.name }}</span>
+            <button
+              class="ws-menu-item-remove"
+              title="Remove workspace"
+              @click.stop="wsRemove(ws.id)"
+            >&times;</button>
+          </div>
+          <div class="ws-menu-sep" />
+          <button class="ws-menu-item ws-menu-add" @click="wsAdd">
+            <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+              <line x1="6" y1="2" x2="6" y2="10" />
+              <line x1="2" y1="6" x2="10" y2="6" />
+            </svg>
+            Add workspace...
+          </button>
+        </div>
+      </Transition>
+    </div>
+
     <!-- Search/filter -->
     <div class="explorer-search">
       <div class="explorer-search-wrapper" :class="{ 'explorer-search-wrapper--focused': searchFocused }">
@@ -674,6 +786,181 @@ onUnmounted(() => {
   flex-direction: column;
   height: 100%;
   font-size: 13px;
+}
+
+/* ---- Workspace selector ---- */
+.ws-selector {
+  position: relative;
+  flex-shrink: 0;
+  padding: 8px 8px 0;
+}
+
+.ws-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--qc-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--qc-text);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 500;
+  transition: border-color 0.15s, background-color 0.15s;
+  gap: 4px;
+  min-height: 28px;
+}
+
+.ws-trigger:hover {
+  border-color: color-mix(in srgb, var(--qc-text) 25%, transparent);
+  background: color-mix(in srgb, var(--qc-text) 4%, transparent);
+}
+
+.ws-trigger-text {
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ws-parent-path {
+  color: var(--qc-text-muted);
+  opacity: 0.4;
+  font-size: 10px;
+  flex-shrink: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ws-folder-name {
+  flex-shrink: 0;
+  font-weight: 600;
+}
+
+.ws-caret {
+  flex-shrink: 0;
+  color: var(--qc-text-muted);
+  opacity: 0.5;
+  transition: transform 0.15s;
+}
+
+.ws-caret--open {
+  transform: rotate(180deg);
+}
+
+.ws-menu {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 8px;
+  right: 8px;
+  background: var(--qc-bg-header);
+  border: 1px solid var(--qc-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  z-index: 100;
+  padding: 4px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.ws-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 5px 8px;
+  font-size: 11px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--qc-text);
+  cursor: pointer;
+  transition: background 0.1s;
+  text-align: left;
+  gap: 4px;
+}
+
+.ws-menu-item:hover {
+  background: var(--qc-bg-surface);
+}
+
+.ws-menu-item--active {
+  font-weight: 700;
+}
+
+.ws-menu-item--active::before {
+  content: '';
+  display: inline-block;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--qc-text);
+  margin-right: 4px;
+  flex-shrink: 0;
+}
+
+.ws-menu-item-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-menu-item-remove {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--qc-text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  flex-shrink: 0;
+  transition: color 0.1s;
+}
+
+.ws-menu-item:hover .ws-menu-item-remove {
+  display: flex;
+}
+
+.ws-menu-item-remove:hover {
+  color: #ef4444;
+}
+
+.ws-menu-sep {
+  height: 1px;
+  margin: 3px 4px;
+  background: var(--qc-border);
+}
+
+.ws-menu-add {
+  color: var(--qc-text-muted);
+  gap: 6px;
+}
+
+.ws-menu-add:hover {
+  color: var(--qc-text);
+}
+
+/* Workspace dropdown transition */
+.ws-drop-enter-active,
+.ws-drop-leave-active {
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+.ws-drop-enter-from,
+.ws-drop-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
 }
 
 /* ---- Search bar ---- */

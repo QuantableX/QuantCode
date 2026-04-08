@@ -25,7 +25,7 @@ const DEFAULT_WINDOW_SIZE: Record<WindowType, { width: number; height: number }>
   agent: { width: 480, height: 600 },
   terminal: { width: 600, height: 400 },
   diff: { width: 700, height: 500 },
-  spec: { width: 550, height: 450 },
+  spec: { width: 760, height: 500 },
   file: { width: 500, height: 400 },
   browser: { width: 700, height: 500 },
 }

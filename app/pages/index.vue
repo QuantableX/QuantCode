@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useAppStore, SHELL_OPTIONS } from '../../stores/app'
-import type { ShellType, Theme, PanelToggleStyle } from '../../stores/app'
+import type { ShellType, Theme, PanelToggleStyle, SidebarInitialWidth } from '../../stores/app'
 import { useBrowserStore } from '../../stores/browser'
 import type { SearchEngine } from '../../shared/types'
 import { invoke } from '@tauri-apps/api/core'
@@ -17,10 +17,19 @@ const DEFAULT_SIDEBAR_WIDTH = 220
 const MIN_SIDEBAR_WIDTH = 120
 const DEFAULT_NOTES_HEIGHT = 200
 const MIN_NOTES_HEIGHT = 80
+const SNAP_THRESHOLD = 20 // px – sidebar snaps when within this distance
+const TOGGLE_BTN_WIDTH = 51 // sidebar toggle button width in titlebar
+const SNAP_WIDTH = DEFAULT_SIDEBAR_WIDTH + TOGGLE_BTN_WIDTH
 
-const leftWidth = ref(DEFAULT_SIDEBAR_WIDTH)
-const rightWidth = ref(DEFAULT_SIDEBAR_WIDTH)
+const initialWidth = computed(() => appStore.sidebarInitialWidth === 'wide' ? SNAP_WIDTH : DEFAULT_SIDEBAR_WIDTH)
+const leftWidth = ref(appStore.sidebarInitialWidth === 'wide' ? SNAP_WIDTH : DEFAULT_SIDEBAR_WIDTH)
+const rightWidth = ref(appStore.sidebarInitialWidth === 'wide' ? SNAP_WIDTH : DEFAULT_SIDEBAR_WIDTH)
 const notesHeight = ref(DEFAULT_NOTES_HEIGHT)
+
+watch(initialWidth, (w) => {
+  leftWidth.value = w
+  rightWidth.value = w
+})
 
 const statusBarRef = ref<HTMLElement | null>(null)
 const statusBarHeight = ref(24)
@@ -81,7 +90,13 @@ function onResizeMove(e: MouseEvent) {
   const dx = e.clientX - resizeStartX.value
   const delta = resizing.value === 'left' ? dx : -dx
   const maxWidth = Math.floor(window.innerWidth * (resizing.value === 'left' ? 0.25 : 0.50))
-  const newWidth = Math.min(maxWidth, Math.max(MIN_SIDEBAR_WIDTH, resizeStartWidth.value + delta))
+  let newWidth = Math.min(maxWidth, Math.max(MIN_SIDEBAR_WIDTH, resizeStartWidth.value + delta))
+  // Snap to default width or default + toggle button width when near either
+  if (Math.abs(newWidth - DEFAULT_SIDEBAR_WIDTH) < SNAP_THRESHOLD) {
+    newWidth = DEFAULT_SIDEBAR_WIDTH
+  } else if (Math.abs(newWidth - SNAP_WIDTH) < SNAP_THRESHOLD) {
+    newWidth = SNAP_WIDTH
+  }
   if (resizing.value === 'left') {
     leftWidth.value = newWidth
   } else {
@@ -109,9 +124,9 @@ function suppressBriefly() {
 function resetWidth(side: 'left' | 'right') {
   suppressBriefly()
   if (side === 'left') {
-    leftWidth.value = DEFAULT_SIDEBAR_WIDTH
+    leftWidth.value = initialWidth.value
   } else {
-    rightWidth.value = DEFAULT_SIDEBAR_WIDTH
+    rightWidth.value = initialWidth.value
   }
 }
 
@@ -287,8 +302,9 @@ async function downloadUpdate() {
         @click="appStore.toggleEditor()"
       />
     </template>
-    <!-- Bottom notes pill (always visible) -->
+    <!-- Bottom notes pill (hidden in classic mode — header button handles it) -->
     <button
+      v-if="appStore.panelToggleStyle !== 'classic'"
       class="panel-toggle panel-toggle-horizontal"
       :class="{ 'no-pos-transition': resizing || suppressTransition }"
       :style="{
@@ -490,6 +506,26 @@ async function downloadUpdate() {
               />
             </span>
           </button>
+          <button
+            class="w-full text-left px-3 py-2.5 rounded-lg text-xs flex items-center justify-between transition-all mt-1"
+            :style="{
+              background: 'var(--qc-bg-surface)',
+              color: 'var(--qc-text)',
+              border: '1px solid var(--qc-border)',
+            }"
+            @click="appStore.toggleCanvasMinimap()"
+          >
+            <span>Canvas Minimap</span>
+            <span
+              class="w-8 h-4 rounded-full relative inline-block transition-all"
+              :style="{ background: appStore.canvasMinimap ? '#a0a0a8' : 'var(--qc-border)' }"
+            >
+              <span
+                class="absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all"
+                :style="{ left: appStore.canvasMinimap ? '18px' : '2px' }"
+              />
+            </span>
+          </button>
         </div>
 
         <!-- Panels -->
@@ -509,6 +545,19 @@ async function downloadUpdate() {
               <option value="both">Both</option>
               <option value="classic">Classic</option>
               <option value="modern">Modern</option>
+            </select>
+          </div>
+
+          <!-- Sidebar Initial Width -->
+          <div class="mb-3">
+            <select
+              class="w-full px-3 py-2 rounded-lg text-xs font-medium appearance-none cursor-pointer transition-all"
+              :style="dropdownStyle"
+              :value="appStore.sidebarInitialWidth"
+              @change="appStore.setSidebarInitialWidth(($event.target as HTMLSelectElement).value as SidebarInitialWidth)"
+            >
+              <option value="default">Default</option>
+              <option value="wide">Wide</option>
             </select>
           </div>
 

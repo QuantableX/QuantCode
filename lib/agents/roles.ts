@@ -31,7 +31,7 @@ Your workflow:
 2. Examine the existing codebase to understand architecture, patterns, and conventions.
 3. Implement the required changes following the spec precisely.
 4. Write clean, typed, well-structured code that matches the project's style.
-5. Update the spec status to "in-progress" when you begin work, and "done" when complete.
+5. Keep the spec status as "open" while work is in progress, and set it to "done" when complete.
 
 Guidelines:
 - Always read specs before coding. Specs are the source of truth.
@@ -103,17 +103,17 @@ Your responsibilities:
 2. Create a task breakdown and determine the optimal order of implementation.
 3. Identify dependencies between specs and flag blockers.
 4. Assign tasks to appropriate agent roles (coder, reviewer, tester).
-5. Track progress and ensure specs move through their lifecycle: planned -> in-progress -> done.
+5. Track progress and ensure specs move through their lifecycle: open -> done.
 6. Facilitate handoffs between agents (coder finishes -> reviewer reviews -> tester tests).
 
 Coordination guidelines:
 - Prioritize specs marked as "critical" or "high" priority.
 - Identify specs that can be worked on in parallel vs. those with dependencies.
 - When assigning work, consider the spec's requirements to choose the right agent role.
-- Monitor for blocked specs and help resolve blockers.
+- Surface blocked work inside open specs and help resolve blockers quickly.
 - Maintain a clear picture of overall project progress.
 - When all specs for a milestone are done, summarize the completed work.
-- Communicate clearly about what's being worked on, what's next, and what's blocked.`,
+- Communicate clearly about what's being worked on, what's next, and where work is blocked.`,
   },
 
   verifier: {
@@ -135,7 +135,7 @@ Verification guidelines:
 - Check for implicit requirements (error handling, edge cases) even if not explicitly in the spec.
 - Verify that the implementation doesn't break existing functionality.
 - If verification fails, provide specific details about what doesn't match the spec.
-- Update the spec status: set to "done" if all criteria pass, "in-progress" if there are gaps.
+- Update the spec status: set to "done" if all criteria pass, or keep it "open" if there are gaps.
 - Produce a structured verification report: Spec Title, Criteria Checked, Results, Overall Verdict.`,
   },
 }

@@ -39,17 +39,16 @@ const PRIORITY_MAP: Record<string, number> = {
 }
 
 const STATUS_WEIGHT: Record<SpecStatus, number> = {
-  'blocked': 0,
-  'done': 0,
-  'in-progress': 3,
-  'planned': 2,
+  open: 2,
+  verify: 1,
+  done: 0,
 }
 
 export function breakdownSpecs(specs: SpecFile[]): TaskBreakdown[] {
   const tasks: TaskBreakdown[] = []
   let taskCounter = 0
 
-  const activeSpecs = specs.filter(s => s.frontmatter.status !== 'done')
+  const activeSpecs = specs.filter(s => s.frontmatter.status !== 'done' && s.frontmatter.status !== 'verify')
 
   for (const spec of activeSpecs) {
     const priority = PRIORITY_MAP[spec.frontmatter.priority || 'medium'] || 2
@@ -66,7 +65,7 @@ export function breakdownSpecs(specs: SpecFile[]): TaskBreakdown[] {
     const dependencies = findDependencies(spec, activeSpecs)
 
     // Create implementation task
-    if (spec.frontmatter.status === 'planned' || spec.frontmatter.status === 'in-progress') {
+    if (spec.frontmatter.status === 'open') {
       tasks.push({
         id: `task_${taskCounter++}`,
         specPath: spec.path,
@@ -114,20 +113,6 @@ export function breakdownSpecs(specs: SpecFile[]): TaskBreakdown[] {
         estimatedComplexity: 'low',
       })
     }
-
-    // Blocked specs get an investigation task
-    if (spec.frontmatter.status === 'blocked') {
-      tasks.push({
-        id: `task_${taskCounter++}`,
-        specPath: spec.path,
-        specTitle: spec.frontmatter.title,
-        description: `Investigate blocker: ${spec.frontmatter.title}`,
-        role: 'general',
-        priority: priority + 1,
-        dependencies: [],
-        estimatedComplexity: 'medium',
-      })
-    }
   }
 
   // Sort by priority (higher first), then by dependencies (fewer deps first)
@@ -150,7 +135,7 @@ function findDependencies(spec: SpecFile, allSpecs: SpecFile[]): string[] {
         f => otherSpec.frontmatter.linkedFiles!.includes(f),
       )
 
-      if (overlap && otherSpec.frontmatter.status === 'planned') {
+      if (overlap && otherSpec.frontmatter.status === 'open') {
         deps.push(otherSpec.path)
       }
     }

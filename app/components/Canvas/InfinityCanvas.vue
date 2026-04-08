@@ -3,7 +3,7 @@ import { useWorkspacesStore } from '../../../stores/workspaces'
 import { useCanvasStore } from '../../../stores/canvas'
 import { useAppStore } from '../../../stores/app'
 import { v4 as uuidv4 } from 'uuid'
-import type { CanvasWindow, WindowType, FilePreviewKind } from '../../../shared/types'
+import type { CanvasWindow as CanvasWindowType, WindowType, FilePreviewKind } from '../../../shared/types'
 import { useEventListener } from '@vueuse/core'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 
@@ -222,7 +222,7 @@ function createWindow(type: WindowType) {
     browser: { width: 700, height: 500 },
   }
 
-  const win: CanvasWindow = {
+  const win: CanvasWindowType = {
     id: uuidv4(),
     type,
     title: titles[type],
@@ -320,7 +320,7 @@ function createFileWindow(filePath: string, screenX: number, screenY: number) {
 
   const isImage = previewKind === 'image'
 
-  const win: CanvasWindow = {
+  const win: CanvasWindowType = {
     id: uuidv4(),
     type: 'file',
     title: fileName,
